@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local data and generated output (never commit personal time data)
+*.csv
+!tests/fixtures/*.csv
+reports/
+*.lock
+
+# Secrets and local config
+.env
+.env.*
+config.local.toml
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude local settings
+.claude/settings.local.json
