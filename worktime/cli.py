@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import sys
 
-from worktime import __version__
-from worktime.config import ConfigError, config_path, load_config
+from worktime import __version__, session
+from worktime.config import ConfigError, load_config, config_path
+from worktime.notify import notify
+from worktime.session import SessionError
+from worktime.store import StoreError
 
 _WEEKDAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_TITLE = "WorkTime"
 
 
 def _format_hmm(minutes: int) -> str:
@@ -33,6 +37,64 @@ def _cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_start(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    now = session.current_time()
+    result = session.start(cfg.data_file, now, at=args.at)
+
+    if result.started:
+        body = f"Started at {session.fmt_time(result.entry.start, now)}"
+    else:
+        body = (
+            f"Currently running: {session.format_duration(result.elapsed)}\n"
+            f"Since {session.fmt_time(result.entry.start, now)} · "
+            f"Today: {session.format_duration(result.today)}"
+        )
+    notify(_TITLE, body)
+    print(body)
+    return 0
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    now = session.current_time()
+    result = session.stop(cfg.data_file, now, at=args.at)
+
+    if result.stopped:
+        body = (
+            f"Stopped: {session.format_duration(result.entry.duration)}\n"
+            f"Today: {session.format_duration(result.today)}"
+        )
+        notify(_TITLE, body)
+        print(body)
+        return 0
+
+    body = f"No session running\nToday: {session.format_duration(result.today)}"
+    notify(_TITLE, body)
+    print(body)
+    return 1
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    now = session.current_time()
+    result = session.status(cfg.data_file, now)
+    target = _format_hmm(cfg.daily_target_min)
+
+    if result.entry is not None:
+        print(
+            f"Running since {session.fmt_time(result.entry.start, now)} "
+            f"({session.format_duration(result.elapsed)}). "
+            f"Today: {session.format_duration(result.today)}. Target: {target}."
+        )
+    else:
+        print(
+            f"Not running. Today: {session.format_duration(result.today)}. "
+            f"Target: {target}."
+        )
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="worktime",
@@ -47,7 +109,20 @@ def _build_parser() -> argparse.ArgumentParser:
     config_parser = subparsers.add_parser(
         "config", help="Show the effective configuration"
     )
-    config_parser.set_defaults(func=_cmd_config)
+    config_parser.set_defaults(func=_cmd_config, notify_errors=False)
+
+    start_parser = subparsers.add_parser(
+        "start", help="Start a session (or show the running one)"
+    )
+    start_parser.add_argument("--at", help="Start time as HH:MM")
+    start_parser.set_defaults(func=_cmd_start, notify_errors=True)
+
+    stop_parser = subparsers.add_parser("stop", help="Stop the running session")
+    stop_parser.add_argument("--at", help="Stop time as HH:MM")
+    stop_parser.set_defaults(func=_cmd_stop, notify_errors=True)
+
+    status_parser = subparsers.add_parser("status", help="Print the current state")
+    status_parser.set_defaults(func=_cmd_status, notify_errors=False)
 
     return parser
 
@@ -62,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return args.func(args)
-    except ConfigError as e:
+    except (ConfigError, StoreError, SessionError) as e:
         print(f"worktime: {e}", file=sys.stderr)
+        if getattr(args, "notify_errors", False):
+            notify("WorkTime error", str(e))
         return 1
