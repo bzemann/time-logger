@@ -17,6 +17,7 @@ def run(args, **kwargs):
         [str(WORKTIME_BIN), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         **kwargs,
     )
 
@@ -59,6 +60,51 @@ class ConfigCommandTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertTrue(result.stderr.startswith("worktime: "), result.stderr)
+
+    def test_config_with_no_days_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text("", encoding="utf-8")
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+
+            result = run(["config"], cwd=str(tmp_path), env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("days off:     (none)", result.stdout)
+
+    def test_config_with_days_off_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text(
+                'days_off = ["2026-12-24..2027-01-02"]\n',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+
+            result = run(["config"], cwd=str(tmp_path), env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("days off:     10 days (2026-12-24 … 2027-01-02)", result.stdout)
+
+    def test_config_with_single_days_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text(
+                'days_off = ["2027-01-02"]\n',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+
+            result = run(["config"], cwd=str(tmp_path), env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("days off:     1 day (2027-01-02)", result.stdout)
 
 
 class NoCommandTests(unittest.TestCase):

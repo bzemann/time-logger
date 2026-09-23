@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from datetime import date
+
 from worktime.config import (
     DEFAULT_DAILY_TARGET_MIN,
     DEFAULT_DATA_FILE,
@@ -17,6 +19,7 @@ from worktime.config import (
     config_path,
     load_config,
     parse_daily_target,
+    parse_days_off,
 )
 
 
@@ -202,6 +205,120 @@ class ConfigPathTests(unittest.TestCase):
                     config_path(),
                     Path(fake_home) / ".config" / "worktime" / "config.toml",
                 )
+
+
+class ParseDaysOffTests(unittest.TestCase):
+    def test_single_date(self):
+        result = parse_days_off(["2026-12-24"])
+        self.assertEqual(result, frozenset({date(2026, 12, 24)}))
+
+    def test_empty_list(self):
+        result = parse_days_off([])
+        self.assertEqual(result, frozenset())
+
+    def test_date_range_inclusive(self):
+        result = parse_days_off(["2026-12-24..2026-12-31"])
+        # Should be 8 days: 24, 25, 26, 27, 28, 29, 30, 31
+        self.assertEqual(len(result), 8)
+        self.assertIn(date(2026, 12, 24), result)
+        self.assertIn(date(2026, 12, 31), result)
+        self.assertNotIn(date(2027, 1, 1), result)
+
+    def test_multiple_dates_and_ranges(self):
+        result = parse_days_off(["2026-12-24..2026-12-31", "2027-01-02"])
+        # Should be 9 days: 8 from range + 1 single date
+        self.assertEqual(len(result), 9)
+        self.assertIn(date(2026, 12, 24), result)
+        self.assertIn(date(2026, 12, 31), result)
+        self.assertIn(date(2027, 1, 2), result)
+        self.assertNotIn(date(2027, 1, 1), result)
+
+    def test_overlapping_dates_merged(self):
+        result = parse_days_off(["2026-12-24", "2026-12-24", "2026-12-25"])
+        self.assertEqual(result, frozenset({date(2026, 12, 24), date(2026, 12, 25)}))
+
+    def test_spaces_around_dates(self):
+        result = parse_days_off([" 2027-01-02 "])
+        self.assertEqual(result, frozenset({date(2027, 1, 2)}))
+
+    def test_spaces_in_range(self):
+        result = parse_days_off([" 2026-12-24 .. 2026-12-31 "])
+        self.assertEqual(len(result), 8)
+        self.assertIn(date(2026, 12, 24), result)
+
+    def test_not_a_list(self):
+        with self.assertRaisesRegex(ConfigError, "days_off must be a list of dates"):
+            parse_days_off("2026-12-24")
+
+    def test_non_string_item(self):
+        with self.assertRaisesRegex(ConfigError, "days_off entries must be strings"):
+            parse_days_off([20261224])
+
+    def test_invalid_date_format(self):
+        with self.assertRaisesRegex(ConfigError, "invalid date"):
+            parse_days_off(["2026-1-5"])
+
+    def test_invalid_date_value(self):
+        with self.assertRaisesRegex(ConfigError, "invalid date"):
+            parse_days_off(["2026-13-01"])
+
+    def test_range_start_after_end(self):
+        with self.assertRaisesRegex(ConfigError, "has start after end"):
+            parse_days_off(["2026-12-31..2026-12-24"])
+
+    def test_range_too_long(self):
+        with self.assertRaisesRegex(ConfigError, "longer than 366 days"):
+            parse_days_off(["2026-01-01..2027-01-02"])
+
+    def test_incomplete_range(self):
+        with self.assertRaisesRegex(ConfigError, "invalid date"):
+            parse_days_off(["2026-12-24.."])
+
+    def test_invalid_date_string(self):
+        with self.assertRaisesRegex(ConfigError, "invalid date"):
+            parse_days_off(["abc"])
+
+
+class LoadConfigDaysOffTests(unittest.TestCase):
+    def test_missing_file_defaults_to_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist" / "config.toml"
+            cfg = load_config(missing)
+
+        self.assertEqual(cfg.days_off, frozenset())
+
+    def test_empty_days_off_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(cfg_path, "days_off = []\n")
+            cfg = load_config(cfg_path)
+
+        self.assertEqual(cfg.days_off, frozenset())
+
+    def test_days_off_with_range_and_single_dates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(cfg_path, 'days_off = ["2026-12-24..2026-12-31", "2027-01-02"]\n')
+            cfg = load_config(cfg_path)
+
+        self.assertEqual(len(cfg.days_off), 9)
+        self.assertIn(date(2026, 12, 24), cfg.days_off)
+        self.assertIn(date(2026, 12, 31), cfg.days_off)
+        self.assertIn(date(2027, 1, 2), cfg.days_off)
+
+    def test_invalid_days_off_not_a_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(cfg_path, 'days_off = "2026-12-24"\n')
+            with self.assertRaisesRegex(ConfigError, str(cfg_path)):
+                load_config(cfg_path)
+
+    def test_invalid_days_off_error_includes_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(cfg_path, 'days_off = ["2026-13-01"]\n')
+            with self.assertRaisesRegex(ConfigError, str(cfg_path)):
+                load_config(cfg_path)
 
 
 if __name__ == "__main__":

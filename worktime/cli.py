@@ -19,6 +19,22 @@ def _format_hmm(minutes: int) -> str:
     return f"{minutes // 60}:{minutes % 60:02d}"
 
 
+def _format_days_off(days_off) -> str:
+    """Format days_off frozenset for display."""
+    if not days_off:
+        return "(none)"
+
+    sorted_dates = sorted(days_off)
+    n = len(sorted_dates)
+
+    if n == 1:
+        return f"1 day ({sorted_dates[0]})"
+    else:
+        first = sorted_dates[0]
+        last = sorted_dates[-1]
+        return f"{n} days ({first} … {last})"
+
+
 def _cmd_config(args: argparse.Namespace) -> int:
     path = config_path()
     found = "found" if path.exists() else "not found, using defaults"
@@ -33,6 +49,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     print(f"reports dir:  {cfg.reports_dir}")
     print(f"daily target: {_format_hmm(cfg.daily_target_min)}")
     print(f"workdays:     {workdays}")
+    print(f"days off:     {_format_days_off(cfg.days_off)}")
     print(f"port:         {cfg.port}")
     return 0
 

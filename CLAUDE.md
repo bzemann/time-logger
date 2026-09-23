@@ -43,10 +43,24 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - A missing tool, a failure or an unknown OS falls back to stderr. `WORKTIME_NO_NOTIFY=1` disables notifications (the tests use this).
 - **`worktime/config.py`:** TOML config, loaded into a frozen `Config(data_file, reports_dir, daily_target_min, workdays, port)`. Invalid values raise `ConfigError`.
   - Location: `$WORKTIME_CONFIG`, else `$XDG_CONFIG_HOME/worktime/config.toml`, else `~/.config/worktime/config.toml`. A missing file means defaults. See `config.example.toml`.
-  - Keys: `data_file`, `reports_dir`, `daily_target` (`"H:MM"` or number of hours, **default 8:30**), `workdays` (default mon–fri; stored as 0=Mon), `port` (default 8765). Unknown keys are an error.
+  - Keys: `data_file`, `reports_dir`, `daily_target` (`"H:MM"` or number of hours, **default 8:30**), `workdays` (default mon–fri; stored as 0=Mon), `days_off` (list of `"YYYY-MM-DD"` or inclusive `"YYYY-MM-DD..YYYY-MM-DD"` ranges up to 366 days; stored as `frozenset[date]`; default empty), `port` (default 8765). Unknown keys are an error.
   - Default data path on both OSes: `~/.local/share/worktime/worktime.csv`. Reports go to `reports/` next to it.
-- **`worktime/stats.py`:** All aggregation (per day/week/month, target, balance, averages, longest session, session counts). The API and the reports both use it, so their numbers are consistent.
-  - Daily balance = today's worked time − target. The target is 0 on days that aren't workdays.
+- **`worktime/stats.py`:** All aggregation. Pure functions with no I/O. The API (task 4) and the reports (task 7) both use it, so their numbers are consistent.
+  - Rules:
+    - The target per day is `daily_target` on workdays that aren't in `days_off`, else 0.
+    - Worked time per day is the sum of `elapsed(now)` for sessions *starting* that day (a running session counts with its time so far).
+    - The target of a period covers only days in `[max(start, first entry date), min(end, today)]`. Today counts with its full target; days before tracking started or in the future count 0.
+    - Balance = worked − target.
+    - Everything is exact-second `timedelta`; rounding happens at display time only.
+    - This reproduces the screenshot: a week with 28h 52m worked at a 8:24 target over 3 days gives +03:40.
+  - API:
+    - `Target(daily, workdays, days_off)` with `.for_day(d)` and `.from_config(cfg)`.
+    - `tracking_start(entries)`.
+    - `daily_totals(entries, now, start, end)` covers every day, zeros included.
+    - `summarize(...) -> PeriodSummary(start, end, worked, target, balance, sessions, days_worked, target_days, avg_per_day_worked, avg_per_target_day, longest)`. `longest` is finished sessions only.
+    - `overview(entries, now, target)` returns the keys today, week (ISO Mon–Sun), month and total.
+    - `buckets(..., unit="week"|"month")` returns `Bucket(label, start, end, worked, target, balance, cumulative_balance)`. Labels are `2026-W39` / `2026-09`, and edge buckets are clipped to the range.
+    - `resolve_range("7d"|"30d"|"90d"|"year"|"all", now, entries)`.
 - **`worktime/server.py`:** `http.server` bound to `127.0.0.1`. It re-reads the CSV on every request.
   - `worktime dashboard` starts the server in the background if it isn't running, then opens the browser (`open` / `xdg-open`).
 - **`web/`:** The static dashboard (reference: `example-dashboard.jpeg`, minus all project elements).
@@ -73,8 +87,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–2 (launcher, config, CSV store, start/stop/status with `--at`, desktop notifications). 117 unit tests pass. The macOS notification was confirmed visually by Basil.
-- Open: roadmap items 3–10.
+- Implemented: tasks 1–3 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module). 179 unit tests pass. The macOS notification was confirmed visually by Basil.
+- Open: roadmap items 4–10.
 - To do in task 8/9: unexpected exceptions (e.g. an unwritable data folder) currently produce only a traceback and no notification. Add a catch-all error notification for shortcut-triggered commands.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
@@ -90,7 +104,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 1. ✅ **Skeleton, config and CSV store** (done 2026-09-23): package layout, `bin/worktime`, `config.py`, `store.py` (format, atomic write, lock, midnight rule), unit tests.
 2. ✅ **Sessions, CLI and notifications** (done 2026-09-23): `start` (status notification while running), `stop`, `status`, `notify.py` for macOS and Linux, unit tests with notifications mocked.
-3. **Stats module:** day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
+3. ✅ **Stats module** (done 2026-09-23): day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
 4. **Web server and JSON API:** `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
 5. **Dashboard part 1** *(reference: `example-dashboard.jpeg`)*: layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. **Dashboard part 2:** weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
@@ -113,3 +127,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Project setup: Git (`main`), `.gitignore`, `.claude/settings.json` (Planner agent), `CLAUDE.md` with architecture and roadmap, private GitHub repo.
 - 2026-09-23: Task 1: `bin/worktime` launcher (finds Python ≥ 3.11 under a minimal PATH), CLI skeleton, TOML config (default target 8:30), strict CSV store with atomic writes and `flock` locking, 64 unit tests.
 - 2026-09-23: Task 2: `start`/`stop`/`status` with `--at HH:MM`, 24h and overlap protection, desktop notifications (`osascript` / `notify-send`, stderr fallback, `WORKTIME_NO_NOTIFY`), error notifications for shortcut commands. 117 tests.
+- 2026-09-23: Task 3: `worktime/stats.py` (daily totals, period summaries, dashboard overview, week/month trend buckets, range presets) with the screenshot's balance semantics. New config key `days_off` for vacation and holidays. 179 tests.

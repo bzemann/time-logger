@@ -15,6 +15,7 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 
 DEFAULT_DATA_FILE = "~/.local/share/worktime/worktime.csv"
@@ -24,8 +25,9 @@ DEFAULT_PORT = 8765
 
 _WEEKDAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _HMM_RE = re.compile(r"^\d{1,2}:[0-5]\d$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-_ALLOWED_KEYS = {"data_file", "reports_dir", "daily_target", "workdays", "port"}
+_ALLOWED_KEYS = {"data_file", "reports_dir", "daily_target", "workdays", "port", "days_off"}
 
 
 class ConfigError(Exception):
@@ -39,6 +41,7 @@ class Config:
     daily_target_min: int
     workdays: frozenset[int]
     port: int
+    days_off: frozenset[date] = frozenset()
 
 
 def config_path() -> Path:
@@ -112,6 +115,53 @@ def _parse_port(value) -> int:
     return value
 
 
+def _parse_date(s: str) -> date:
+    """Parse a single date string in YYYY-MM-DD format."""
+    if not _DATE_RE.match(s):
+        raise ConfigError(f"invalid date '{s}' in days_off, expected YYYY-MM-DD")
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        raise ConfigError(f"invalid date '{s}' in days_off, expected YYYY-MM-DD") from None
+
+
+def parse_days_off(value) -> frozenset[date]:
+    """Parse days_off value into a frozenset of dates.
+
+    Accepts a list of date strings in YYYY-MM-DD format or date ranges
+    in format YYYY-MM-DD..YYYY-MM-DD (inclusive).
+    """
+    if not isinstance(value, list):
+        raise ConfigError(f"days_off must be a list of dates, got {value!r}")
+
+    dates: set[date] = set()
+
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError(f"days_off entries must be strings, got {item!r}")
+
+        item_stripped = item.strip()
+
+        if ".." in item_stripped:
+            start, end = (_parse_date(p.strip()) for p in item_stripped.split("..", 1))
+
+            if start > end:
+                raise ConfigError(f"days_off range '{item}' has start after end")
+
+            range_days = (end - start).days + 1
+            if range_days > 366:
+                raise ConfigError(f"days_off range '{item}' is longer than 366 days")
+
+            current = start
+            while current <= end:
+                dates.add(current)
+                current += timedelta(days=1)
+        else:
+            dates.add(_parse_date(item_stripped))
+
+    return frozenset(dates)
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load the configuration from ``path`` (or the default location)."""
     if path is None:
@@ -125,6 +175,7 @@ def load_config(path: Path | None = None) -> Config:
             daily_target_min=DEFAULT_DAILY_TARGET_MIN,
             workdays=DEFAULT_WORKDAYS,
             port=DEFAULT_PORT,
+            days_off=frozenset(),
         )
 
     try:
@@ -166,6 +217,11 @@ def load_config(path: Path | None = None) -> Config:
             port = _parse_port(raw["port"])
         else:
             port = DEFAULT_PORT
+
+        if "days_off" in raw:
+            days_off = parse_days_off(raw["days_off"])
+        else:
+            days_off = frozenset()
     except ConfigError as e:
         raise ConfigError(f"{path}: {e}") from e
 
@@ -175,4 +231,5 @@ def load_config(path: Path | None = None) -> Config:
         daily_target_min=daily_target_min,
         workdays=workdays,
         port=port,
+        days_off=days_off,
     )

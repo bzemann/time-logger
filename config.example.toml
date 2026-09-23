@@ -19,5 +19,10 @@ daily_target = "8:30"
 # Days that count towards the daily target: mon, tue, wed, thu, fri, sat, sun.
 workdays = ["mon", "tue", "wed", "thu", "fri"]
 
+# Days off (vacation, public holidays): the daily target is 0 on these days.
+# Single dates "YYYY-MM-DD" or inclusive ranges "YYYY-MM-DD..YYYY-MM-DD".
+days_off = []
+# days_off = ["2026-12-24..2026-12-31", "2027-01-02"]
+
 # Port the local dashboard server listens on (127.0.0.1 only).
 port = 8765
