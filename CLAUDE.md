@@ -37,7 +37,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - `--at HH:MM` (for both `start` and `stop`) resolves to the most recent non-future occurrence of that time. `start --at` refuses overlaps with the previous session and refuses while a session is running. `stop --at` refuses times before the session start.
   - A forgotten session of 24h or more: `stop` refuses and suggests `stop --at HH:MM`. If that still gives 24h or more, the error says to edit the last CSV row manually.
   - `format_duration` rounds down to minutes: `45m`, `1h 04m`, `25h 03m`. `today_total` counts sessions whose start date is today, including the running one.
-- **`worktime/notify.py`:** The only OS-specific part of the core. `notify(title, body)` never raises.
+- **`worktime/notify.py`:** One of the two OS-specific parts of the core (the other is `browser.py`). `notify(title, body)` never raises.
   - macOS: `osascript` with the title and body passed as argv, not interpolated into the script. Notifications appear as coming from "Script Editor".
   - Linux: `notify-send -a WorkTime -t 5000`.
   - A missing tool, a failure or an unknown OS falls back to stderr. `WORKTIME_NO_NOTIFY=1` disables notifications (the tests use this).
@@ -61,9 +61,34 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
     - `overview(entries, now, target)` returns the keys today, week (ISO Mon–Sun), month and total.
     - `buckets(..., unit="week"|"month")` returns `Bucket(label, start, end, worked, target, balance, cumulative_balance)`. Labels are `2026-W39` / `2026-09`, and edge buckets are clipped to the range.
     - `resolve_range("7d"|"30d"|"90d"|"year"|"all", now, entries)`.
-- **`worktime/server.py`:** `http.server` bound to `127.0.0.1`. It re-reads the CSV on every request.
-  - `worktime dashboard` starts the server in the background if it isn't running, then opens the browser (`open` / `xdg-open`).
-- **`web/`:** The static dashboard (reference: `example-dashboard.jpeg`, minus all project elements).
+- **`worktime/server.py`:** `ThreadingHTTPServer`, bound to `127.0.0.1` only. Config and CSV are re-read on **every request**, so `days_off` and other config edits apply without a restart. Only `port` needs one.
+  - Security:
+    - GET only, no write endpoints.
+    - The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`, else 403 (protects against DNS rebinding).
+    - Static files come only from `web/`; resolved paths that leave it give 404.
+    - Every response sets `Cache-Control: no-store`.
+  - Routes:
+    - `/api/health` returns `{"app": "worktime", "version"}`.
+    - `/api/dashboard` takes `?range=7d|30d|90d|year|all` (default `30d`), or `?start=&end=` (both, YYYY-MM-DD), plus `&unit=week|month` (default week) and `&limit=1..500` (default 50). Bad parameters give 400, a broken CSV or config gives 500; both return `{"error"}`.
+    - Anything else is a static file from `web/`.
+  - The `/api/dashboard` JSON is built by `build_dashboard(entries, now, cfg, params)`, a pure function. All durations are **integer seconds** (`*_s`).
+    - `version`, `generated` (ISO), `status {running, since, elapsed_s}`, `settings {daily_target_s, workdays}`.
+    - `overview {today, week, month, total}` and `range_summary`: each a summary with `start, end, worked_s, target_s, balance_s, sessions, days_worked, target_days, avg_per_day_worked_s, avg_per_target_day_s, longest {date, start, end, duration_s} | null`.
+    - `range {name, start, end, unit}`.
+    - `days [{date, worked_s, target_s}]` (every day of the range; the target follows the window rule via `stats.daily_targets`).
+    - `trend [{label, start, end, worked_s, target_s, balance_s, cumulative_balance_s}]`.
+    - `entries [{date, start, end|null, duration_s, running}]`: the **50 most recent sessions overall, newest first, not filtered by the range** (Basil's decision).
+  - `run(host, port, pid_file)` writes `server.pid`, handles SIGTERM and Ctrl-C, and removes the PID file on exit. There is no access log; errors go to stderr.
+  - `pid_path(cfg)` and `log_path(cfg)` give `server.pid` and `server.log` next to the CSV.
+- **`worktime/control.py`:** background server lifecycle.
+  - `probe(port)` returns "ours", "free" or "other", based on `/api/health`.
+  - `start_background(cfg)` spawns `python -m worktime serve` detached (`start_new_session`, output to `server.log`) and waits up to 5 s for it to answer.
+  - `stop_background(cfg)` reads the PID file, checks the server is ours, sends SIGTERM and waits. It also cleans up stale or invalid PID files.
+  - **After code updates, run `worktime stop-server` once**, because a running server keeps serving the old code.
+- **`worktime/browser.py`:** `open_url(url)` uses `open` on macOS and `xdg-open` on Linux, falling back to `webbrowser`. It never raises. `WORKTIME_NO_BROWSER=1` disables it (the tests use this).
+- **`web/`:** The static dashboard (reference: `example-dashboard.jpeg`, minus all project elements). It fetches `/api/dashboard`.
+  - Currently `web/index.html` is a placeholder that shows the raw JSON. Tasks 5–6 replace it.
+  - Decided for task 5: the default range is **30 days**, and the page **remembers the last chosen range** in `localStorage`.
   - Header with Running status and generated timestamp.
   - Summary cards (today/week/month/total + daily balance).
   - Range filter (7d/30d/90d/this year/all/custom).
@@ -72,8 +97,8 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - Recent-entries table with a running flag.
 - **`worktime/report.py`:** Weekly and monthly reports as self-contained HTML with inline SVG charts drawn by Python. It includes total hours, average per day, sessions, longest session and over/under target.
 - **`platform/macos/`, `platform/linux/`:** Thin launcher layer: keybinding snippets (Aerospace / i3), Spotlight `.app` bundles in `~/Applications` / rofi `.desktop` entries, and install scripts that **print** snippets rather than editing WM configs.
-- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). Planned: `dashboard | serve | report week|month [--date YYYY-MM-DD]`.
-  - Errors: `ConfigError`, `StoreError` and `SessionError` print `worktime: …` to stderr and exit 1. For `start` and `stop` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
+- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. Planned: `report week|month [--date YYYY-MM-DD]`.
+  - Errors: `ConfigError`, `StoreError`, `SessionError` and `ControlError` print `worktime: …` to stderr and exit 1. For `start`, `stop` and `dashboard` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
 
 ## Workflow
 
@@ -87,8 +112,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–3 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module). 179 unit tests pass. The macOS notification was confirmed visually by Basil.
-- Open: roadmap items 4–10.
+- Implemented: tasks 1–4 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`). 245 unit tests pass. Basil visually confirmed the macOS notification and the browser opening the placeholder page.
+- Open: roadmap items 5–10.
 - To do in task 8/9: unexpected exceptions (e.g. an unwritable data folder) currently produce only a traceback and no notification. Add a catch-all error notification for shortcut-triggered commands.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
@@ -105,7 +130,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 1. ✅ **Skeleton, config and CSV store** (done 2026-09-23): package layout, `bin/worktime`, `config.py`, `store.py` (format, atomic write, lock, midnight rule), unit tests.
 2. ✅ **Sessions, CLI and notifications** (done 2026-09-23): `start` (status notification while running), `stop`, `status`, `notify.py` for macOS and Linux, unit tests with notifications mocked.
 3. ✅ **Stats module** (done 2026-09-23): day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
-4. **Web server and JSON API:** `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
+4. ✅ **Web server and JSON API** (done 2026-09-23): `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
 5. **Dashboard part 1** *(reference: `example-dashboard.jpeg`)*: layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. **Dashboard part 2:** weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. **Reports:** `report week|month [--date]` as self-contained HTML with stats and SVG charts (daily bars, trend line), saved to `reports/`.
@@ -119,7 +144,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Show effective config: `bin/worktime config` (`bin/worktime --version`)
 - Track time: `bin/worktime start [--at HH:MM]`, `bin/worktime stop [--at HH:MM]`, `bin/worktime status`
 - Quiet mode for development: `WORKTIME_NO_NOTIFY=1 bin/worktime …`
-- Dashboard (after task 4): `bin/worktime dashboard`
+- Dashboard: `bin/worktime dashboard` (starts the server in the background and opens the browser). Stop it: `bin/worktime stop-server`. Foreground for debugging: `bin/worktime serve [--port N]`
+- Quiet mode for tests: `WORKTIME_NO_NOTIFY=1 WORKTIME_NO_BROWSER=1`
 - Tests: `python3 -m unittest discover -s tests`
 
 ## Changelog
@@ -128,3 +154,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 1: `bin/worktime` launcher (finds Python ≥ 3.11 under a minimal PATH), CLI skeleton, TOML config (default target 8:30), strict CSV store with atomic writes and `flock` locking, 64 unit tests.
 - 2026-09-23: Task 2: `start`/`stop`/`status` with `--at HH:MM`, 24h and overlap protection, desktop notifications (`osascript` / `notify-send`, stderr fallback, `WORKTIME_NO_NOTIFY`), error notifications for shortcut commands. 117 tests.
 - 2026-09-23: Task 3: `worktime/stats.py` (daily totals, period summaries, dashboard overview, week/month trend buckets, range presets) with the screenshot's balance semantics. New config key `days_off` for vacation and holidays. 179 tests.
+- 2026-09-23: Task 4: local web server (`server.py`, 127.0.0.1 only, Host check, safe static serving), `/api/health` and `/api/dashboard` JSON (all durations in seconds), `stats.daily_targets`, background lifecycle (`control.py`: probe, detached start, PID file, stop), `browser.py`, CLI `serve`/`dashboard`/`stop-server`, placeholder `web/index.html`. 245 tests.

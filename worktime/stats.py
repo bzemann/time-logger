@@ -106,28 +106,33 @@ def daily_totals(
     return totals
 
 
+def daily_targets(
+    entries: Sequence[Entry], now: datetime, start: date, end: date, target: Target
+) -> dict[date, timedelta]:
+    if start > end:
+        raise ValueError("start must be <= end")
+
+    ts = tracking_start(entries)
+    today = now.date()
+
+    targets: dict[date, timedelta] = {}
+    d = start
+    while d <= end:
+        if ts is not None and ts <= d <= today:
+            targets[d] = target.for_day(d)
+        else:
+            targets[d] = timedelta(0)
+        d += timedelta(days=1)
+
+    return targets
+
+
 def _target_window(
     entries: Sequence[Entry], now: datetime, start: date, end: date, target: Target
 ) -> tuple[timedelta, int]:
-    ts = tracking_start(entries)
-    if ts is None:
-        return timedelta(0), 0
-
-    window_start = max(start, ts)
-    window_end = min(end, now.date())
-    if window_start > window_end:
-        return timedelta(0), 0
-
-    total = timedelta(0)
-    target_days = 0
-    d = window_start
-    while d <= window_end:
-        t = target.for_day(d)
-        total += t
-        if t > timedelta(0):
-            target_days += 1
-        d += timedelta(days=1)
-
+    targets = daily_targets(entries, now, start, end, target)
+    total = sum(targets.values(), timedelta(0))
+    target_days = sum(1 for v in targets.values() if v > timedelta(0))
     return total, target_days
 
 

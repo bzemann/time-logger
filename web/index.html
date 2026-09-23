@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WorkTime Logger</title>
+</head>
+<body>
+<h1>WorkTime Logger</h1>
+<p>Placeholder — the dashboard UI follows in task 5.</p>
+<pre id="out">Loading…</pre>
+<script>
+fetch("/api/dashboard").then(r => r.json()).then(d => out.textContent = JSON.stringify(d, null, 2)).catch(e => out.textContent = "Error: " + e);
+</script>
+</body>
+</html>

@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import http.server
+import json
 import os
+import signal
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKTIME_BIN = REPO_ROOT / "bin" / "worktime"
+SERVER_PY = REPO_ROOT / "worktime" / "server.py"
+
+
+def _free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def run(args, **kwargs):
@@ -227,6 +244,110 @@ class SessionCommandTests(unittest.TestCase):
             result = run(["start", "--at", "25:00"], env=env)
             self.assertEqual(result.returncode, 1)
             self.assertIn("invalid time", result.stderr)
+
+
+class DashboardServerTests(unittest.TestCase):
+    def _env(self, tmp_path: Path, port: int):
+        cfg_path = tmp_path / "config.toml"
+        data_file = tmp_path / "data" / "worktime.csv"
+        cfg_path.write_text(
+            f'data_file = "{data_file}"\nport = {port}\n', encoding="utf-8"
+        )
+        env = dict(os.environ)
+        env["WORKTIME_CONFIG"] = str(cfg_path)
+        env["WORKTIME_NO_NOTIFY"] = "1"
+        env["WORKTIME_NO_BROWSER"] = "1"
+        return env, data_file
+
+    def _kill_leftover_pid(self, data_file: Path):
+        pid_file = data_file.parent / "server.pid"
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+            except (ValueError, OSError):
+                pass
+
+    def test_stop_server_when_nothing_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            port = _free_port()
+            env, data_file = self._env(tmp_path, port)
+
+            result = run(["stop-server"], env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "Server is not running.")
+
+    def test_dashboard_start_reuse_and_stop(self):
+        if not SERVER_PY.exists():
+            self.skipTest("worktime/server.py does not exist yet")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            port = _free_port()
+            env, data_file = self._env(tmp_path, port)
+
+            try:
+                result = run(["dashboard"], env=env, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"http://127.0.0.1:{port}/", result.stdout)
+
+                pid_file = data_file.parent / "server.pid"
+                self.assertTrue(pid_file.exists())
+
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/health", timeout=5
+                ) as resp:
+                    data = json.loads(resp.read())
+                self.assertEqual(data.get("app"), "worktime")
+
+                # Calling dashboard again should reuse the running server.
+                result = run(["dashboard"], env=env, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"http://127.0.0.1:{port}/", result.stdout)
+
+                result = run(["stop-server"], env=env, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "Server stopped.")
+
+                self.assertFalse(pid_file.exists())
+
+                with self.assertRaises(urllib.error.URLError):
+                    urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/api/health", timeout=5
+                    )
+            finally:
+                self._kill_leftover_pid(data_file)
+
+    def test_dashboard_port_used_by_other_program(self):
+        port = _free_port()
+
+        class NotFoundHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(404)
+                self.end_headers()
+
+        httpd = http.server.HTTPServer(("127.0.0.1", port), NotFoundHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                env, data_file = self._env(tmp_path, port)
+
+                result = run(["dashboard"], env=env, timeout=30)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("used by another program", result.stderr)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

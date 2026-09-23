@@ -79,6 +79,84 @@ class DailyTotalsTests(unittest.TestCase):
             stats.daily_totals([], now, date(2026, 9, 5), date(2026, 9, 1))
 
 
+class DailyTargetsTests(unittest.TestCase):
+    def test_start_after_end_raises(self):
+        target = stats.Target(td(8), frozenset({0, 1, 2, 3, 4}))
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        with self.assertRaises(ValueError):
+            stats.daily_targets([], now, date(2026, 9, 5), date(2026, 9, 1), target)
+
+    def test_no_entries_all_zero(self):
+        target = stats.Target(td(8), frozenset({0, 1, 2, 3, 4}))
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        result = stats.daily_targets([], now, date(2026, 9, 1), date(2026, 9, 5), target)
+        self.assertEqual(list(result.keys()), [date(2026, 9, d) for d in range(1, 6)])
+        self.assertTrue(all(v == timedelta(0) for v in result.values()))
+
+    def test_before_first_entry_is_zero(self):
+        entries = [
+            Entry(datetime(2026, 9, 23, 8, 0, 0), datetime(2026, 9, 23, 12, 0, 0))
+        ]
+        now = datetime(2026, 9, 23, 18, 0, 0)
+        target = stats.Target(td(8), frozenset({0, 1, 2, 3, 4}))
+        result = stats.daily_targets(entries, now, date(2026, 9, 21), date(2026, 9, 23), target)
+        self.assertEqual(result[date(2026, 9, 21)], timedelta(0))  # Monday, before tracking
+        self.assertEqual(result[date(2026, 9, 22)], timedelta(0))  # Tuesday, before tracking
+        self.assertEqual(result[date(2026, 9, 23)], td(8))  # Wednesday, first entry day
+
+    def test_future_is_zero(self):
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 12, 0, 0))
+        ]
+        now = datetime(2026, 9, 23, 18, 0, 0)
+        target = stats.Target(td(8), frozenset({0, 1, 2, 3, 4}))
+        result = stats.daily_targets(entries, now, date(2026, 9, 23), date(2026, 9, 25), target)
+        self.assertEqual(result[date(2026, 9, 23)], td(8))  # Wednesday, today
+        self.assertEqual(result[date(2026, 9, 24)], timedelta(0))  # future
+        self.assertEqual(result[date(2026, 9, 25)], timedelta(0))  # future
+
+    def test_weekend_is_zero(self):
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 12, 0, 0))
+        ]
+        now = datetime(2026, 9, 27, 18, 0, 0)  # Sunday
+        target = stats.Target(td(8), frozenset({0, 1, 2, 3, 4}))
+        result = stats.daily_targets(entries, now, date(2026, 9, 26), date(2026, 9, 27), target)
+        self.assertEqual(result[date(2026, 9, 26)], timedelta(0))  # Saturday
+        self.assertEqual(result[date(2026, 9, 27)], timedelta(0))  # Sunday
+
+    def test_day_off_is_zero(self):
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 12, 0, 0))
+        ]
+        now = datetime(2026, 9, 23, 18, 0, 0)
+        target = stats.Target(
+            td(8), frozenset({0, 1, 2, 3, 4}), frozenset({date(2026, 9, 23)})
+        )
+        result = stats.daily_targets(entries, now, date(2026, 9, 22), date(2026, 9, 23), target)
+        self.assertEqual(result[date(2026, 9, 22)], td(8))  # Tuesday
+        self.assertEqual(result[date(2026, 9, 23)], timedelta(0))  # Wednesday, day off
+
+    def test_consistency_with_summarize(self):
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 18, 0, 0)),
+            Entry(datetime(2026, 9, 22, 7, 0, 0), datetime(2026, 9, 22, 18, 43, 0)),
+            Entry(datetime(2026, 9, 23, 8, 45, 0), datetime(2026, 9, 23, 12, 1, 0)),
+        ]
+        now = datetime(2026, 9, 23, 17, 3, 0)
+        target = stats.Target(td(8, 24), frozenset({0, 1, 2, 3, 4}))
+        ranges = [
+            (date(2026, 9, 1), date(2026, 9, 23)),
+            (date(2026, 9, 21), date(2026, 9, 27)),
+            (date(2026, 9, 23), date(2026, 9, 23)),
+            (date(2026, 9, 1), date(2026, 9, 30)),
+        ]
+        for start, end in ranges:
+            targets = stats.daily_targets(entries, now, start, end, target)
+            summary = stats.summarize(entries, now, start, end, target)
+            self.assertEqual(sum(targets.values(), timedelta(0)), summary.target)
+
+
 class SummarizeTests(unittest.TestCase):
     def test_start_after_end_raises(self):
         target = stats.Target(td(8), frozenset({0, 1, 2, 3, 4}))

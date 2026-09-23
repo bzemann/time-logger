@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-from worktime import __version__, session
+from worktime import __version__, browser, control, session
 from worktime.config import ConfigError, load_config, config_path
+from worktime.control import ControlError
 from worktime.notify import notify
 from worktime.session import SessionError
 from worktime.store import StoreError
@@ -112,6 +113,42 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    from worktime import server
+
+    cfg = load_config()
+    port = args.port or cfg.port
+    try:
+        server.run("127.0.0.1", port, server.pid_path(cfg))
+    except OSError as e:
+        raise ControlError(f"cannot listen on 127.0.0.1:{port}: {e}") from e
+    return 0
+
+
+def _cmd_dashboard(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    url = f"http://127.0.0.1:{cfg.port}/"
+    state = control.probe(cfg.port)
+
+    if state == "other":
+        raise ControlError(
+            f"Port {cfg.port} is used by another program. "
+            f"Set a different 'port' in {config_path()}."
+        )
+    if state == "free":
+        control.start_background(cfg)
+
+    opened = browser.open_url(url)
+    print(url if opened else f"Open {url} in your browser")
+    return 0
+
+
+def _cmd_stop_server(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    print(control.stop_background(cfg))
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="worktime",
@@ -141,6 +178,22 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Print the current state")
     status_parser.set_defaults(func=_cmd_status, notify_errors=False)
 
+    serve_parser = subparsers.add_parser(
+        "serve", help="Run the dashboard server in the foreground"
+    )
+    serve_parser.add_argument("--port", type=int, help="Port to listen on")
+    serve_parser.set_defaults(func=_cmd_serve, notify_errors=False)
+
+    dashboard_parser = subparsers.add_parser(
+        "dashboard", help="Open the dashboard (starts the server if needed)"
+    )
+    dashboard_parser.set_defaults(func=_cmd_dashboard, notify_errors=True)
+
+    stop_server_parser = subparsers.add_parser(
+        "stop-server", help="Stop the background dashboard server"
+    )
+    stop_server_parser.set_defaults(func=_cmd_stop_server, notify_errors=False)
+
     return parser
 
 
@@ -154,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return args.func(args)
-    except (ConfigError, StoreError, SessionError) as e:
+    except (ConfigError, StoreError, SessionError, ControlError) as e:
         print(f"worktime: {e}", file=sys.stderr)
         if getattr(args, "notify_errors", False):
             notify("WorkTime error", str(e))
