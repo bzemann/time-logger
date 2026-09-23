@@ -154,7 +154,22 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
     - `alt-shift-r`: weekly report (this week so far)
     - The monthly report is only via Spotlight or the CLI.
   - On Basil's Mac: installed. The 4 lines were added to `~/.config/aerospace/aerospace.toml` after the `alt-shift-a` line (backup `aerospace.toml.bak`).
-- **`platform/linux/`** (task 9): i3 keybinding snippet, rofi `.desktop` entries and an install script that **prints** the i3 snippet rather than editing the WM config.
+- **`platform/linux/`** (implemented in task 9; **Debian check pending**): `install.sh [--uninstall|--help]` (POSIX sh, dash-safe), `i3-bindings.conf` (template with `@WORKTIME@`), `README.md` (getting the private repo onto Debian, plus a Debian checklist).
+  - Creates 5 `.desktop` files in `${XDG_DATA_HOME:-~/.local/share}/applications` (`worktime-start`, `-stop`, `-dashboard`, `-report-week`, `-report-month`). rofi `drun` lists them.
+    - Each has the marker `X-WorkTime-Launcher=true`; only files with the marker are touched.
+    - `Exec=<abs path>/bin/worktime <args>`, unquoted.
+  - Runs `update-desktop-database` best-effort.
+  - Symlinks `~/.local/bin/worktime`.
+  - Prints hints for missing `notify-send` / `xdg-open` (`sudo apt install libnotify-bin xdg-utils`, plus dunst).
+  - Prints the i3 lines with a conflict check against `~/.config/i3/config` / `~/.i3/config`. It matches `$mod`/`Mod1`/`Mod4` and both key orders, with a word boundary so `$mod+Shift+tab` isn't `t`. It never edits the i3 config.
+  - Keys:
+    - `$mod+Shift+t`: start, or show the running time
+    - `$mod+Shift+x`: stop
+    - `$mod+Shift+d`: dashboard
+    - `$mod+Shift+w`: weekly report (**not `r`**: that is i3 restart by default)
+    - The monthly report is only via rofi or the CLI.
+  - The repo path must match `[A-Za-z0-9._/-]`, since i3 `exec` and `.desktop` `Exec` are written unquoted.
+  - `WORKTIME_INSTALL_ALLOW_ANY_OS=1` is a test-only hook so the tests run on macOS. `WORKTIME_INSTALL_NO_REGISTER=1` skips `update-desktop-database`.
 - **Unexpected errors:**
   - In `cli.main`, any other `Exception` from a shortcut command (`notify_errors=True`) writes its traceback to `error.log`, then sends a "WorkTime error: Unexpected problem (…). Details in <path>" notification and exits 1.
     - It tries the data folder first, then `~/.local/share/worktime/`. The detail text is capped at 200 characters.
@@ -177,7 +192,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 - Implemented: tasks 1–8 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool, HTML reports with automatic catch-up, the macOS launcher layer, the unexpected-error catch-all). 321 unit tests pass. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
 - Basil's real CSV was reset to header-only on 2026-09-23 (test sessions removed; backup in the session scratchpad only). Real tracking starts from there.
-- Open: roadmap items 9–10.
+- Task 9 (Linux layer) is implemented and tested on macOS in test mode (342 tests pass), but **not yet verified on Basil's Debian machine**. The repo isn't cloned there yet. Next step there: follow `platform/linux/README.md` ("Getting it onto Debian", then the checklist). Fix any Debian findings in a follow-up `/task`.
+- Open: roadmap item 10 (and the Debian check of item 9).
 - Test-writing note for executors: never put "wait for another executor's file" loops or skips into test files. Waiting belongs only in the executor's own work session.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
@@ -199,7 +215,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 6. ✅ **Dashboard part 2** (done 2026-09-23): weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. ✅ **Reports** (done 2026-09-23): `report week|month [--last|--date] [--no-open]` as self-contained HTML with stats, SVG charts (daily bars, cumulative worked vs. target) and a daily table in `reports/`. Automatic catch-up for the last complete week and month on `start` / `dashboard`. HTML only, no PDF.
 8. ✅ **macOS launcher layer** (done 2026-09-23): Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
-9. **Linux launcher layer:** i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
+9. ✅ **Linux launcher layer** (implemented 2026-09-23, Debian check pending): i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
 10. **README and end-to-end check:** `README.md` describing installation, configuration and daily usage on **both macOS and Linux Debian** (shortcuts, dashboard, reports, CSV format, troubleshooting), plus an end-to-end check on both OSes.
 
 ## Setup and run
@@ -207,6 +223,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Requirements: Python 3.11+ (macOS: Homebrew `python3`; Debian 12+: system `python3`). Linux notifications: `notify-send` (`libnotify-bin`) + a notification daemon (e.g. dunst).
 - Reports: `bin/worktime report week` (this week so far), `bin/worktime report month --last`, `bin/worktime report week --date 2026-09-23`. They are created automatically after `start` / `dashboard` (disable with `WORKTIME_NO_AUTO_REPORTS=1`).
 - macOS setup: `platform/macos/install.sh`, then paste the printed Aerospace lines and reload (`alt-shift-c`). Remove it with `platform/macos/install.sh --uninstall`.
+- Debian setup: see `platform/linux/README.md` (clone the private repo via `gh auth login` or an SSH key, then `platform/linux/install.sh`, paste the printed i3 lines, reload with `$mod+Shift+c`).
 - Logs (next to the CSV): `error.log` (unexpected errors from shortcuts), `report.log` (background report catch-up), `server.log` (dashboard server).
 - Show effective config: `bin/worktime config` (`bin/worktime --version`)
 - Track time: `bin/worktime start [--at HH:MM]`, `bin/worktime stop [--at HH:MM]`, `bin/worktime status`
@@ -228,3 +245,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 6: dashboard part 2: "Actual vs. target" trend chart (area plus dashed target line, Weekly/Monthly toggle remembered, crosshair, tooltip with balance and cumulative) and the "Recent sessions (latest 50)" table (running badge, next-day marker). The dashboard is complete.
 - 2026-09-23: Task 7: `worktime/report.py` (self-contained HTML reports with SVG charts, tiles and a daily table, A4 print stylesheet, final/in-progress marker), CLI `report week|month|catch-up`, automatic background catch-up after `start`/`dashboard`. 296 tests.
 - 2026-09-23: Task 8: macOS launcher layer (`platform/macos/install.sh`: 5 ad-hoc signed Spotlight launchers, a `~/.local/bin` symlink, printed Aerospace bindings alt-shift-t/x/d/r), a catch-all notification plus `error.log` for unexpected errors in shortcut commands, and a `bin/worktime` notification when no Python is found. Installed and verified on Basil's Mac. Real CSV reset. 321 tests.
+- 2026-09-23: Task 9: Linux launcher layer (`platform/linux/install.sh`: 5 rofi `.desktop` entries, a `~/.local/bin` symlink, apt hints, printed i3 bindings $mod+Shift+t/x/d/w with a conflict check; README with Debian setup and checklist). Tested on macOS in test mode; the Debian check is pending. 342 tests.
