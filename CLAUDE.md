@@ -124,10 +124,24 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - Daily bar chart with a target line.
   - Weekly/monthly trend of actual vs. target, with tooltips.
   - Recent-entries table with a running flag.
-- **`worktime/report.py`:** Weekly and monthly reports as self-contained HTML with inline SVG charts drawn by Python. It includes total hours, average per day, sessions, longest session and over/under target.
+- **`worktime/report.py`:** Weekly and monthly reports as **one self-contained HTML file each**. There is no PDF (Basil's decision); print to PDF from the browser, since an A4 print stylesheet is included.
+  - The HTML has no JavaScript and no external resources. SVG charts are drawn by Python, and all text is escaped.
+  - Periods: `Period(kind, start, end, title, stem)`. A week is ISO Mon–Sun (`week-2026-W39`, "Week 39, 2026"); a month is a calendar month (`month-2026-09`, "September 2026").
+    - `period_for(kind, ref_date)` and `previous_period(kind, today)` compute them.
+    - `report_path(cfg, p)` is `reports_dir/<stem>.html`.
+  - Three layers:
+    1. `build_report(entries, now, cfg, period) -> Report`: pure data from `stats` (summary, `DayRow`s, cumulative series, running entry).
+    2. `render_html(report)`: header with an "In progress" note, 8 tiles (worked, target, balance, sessions, Ø per day worked, Ø per target day, days worked, longest session), then "Hours per day" (`svg_daily_bars`, with target line), "Cumulative worked vs. target" (`svg_cumulative`, two lines with end labels) and the "Daily breakdown" table with a Total row. An empty period shows "No sessions in this period".
+    3. SVG helpers: a 720×240 viewBox, `nice_scale` for the hour ticks, and `<title>` hover values on every bar and point.
+    - `write_report(cfg, period, now)` reads the CSV and writes atomically. It never notifies or opens anything.
+  - Each file carries `<meta name="worktime:status" content="final|in-progress">` (final = the period is over), read by `read_status(path)`.
+  - `due_reports(cfg, now)` returns the last complete week and month whose report is missing or not final, skipping periods that end before the first entry. There is no backfill of older periods.
+- **Automatic reports (catch-up):** after `start` and `dashboard`, `cli._maybe_start_catch_up` calls `due_reports`. If anything is due, it spawns a detached `python -m worktime report catch-up` (stderr goes to `report.log` next to the CSV), so the shortcut stays instant.
+  - It never breaks `start` or `dashboard`, and `WORKTIME_NO_AUTO_REPORTS=1` disables it (the tests use this).
+  - `report catch-up` writes the due reports, sends one notification each and never opens a browser. Final reports are never overwritten automatically.
 - **`platform/macos/`, `platform/linux/`:** Thin launcher layer: keybinding snippets (Aerospace / i3), Spotlight `.app` bundles in `~/Applications` / rofi `.desktop` entries, and install scripts that **print** snippets rather than editing WM configs.
-- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. Planned: `report week|month [--date YYYY-MM-DD]`.
-  - Errors: `ConfigError`, `StoreError`, `SessionError` and `ControlError` print `worktime: …` to stderr and exit 1. For `start`, `stop` and `dashboard` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
+- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. `report week|month [--last | --date YYYY-MM-DD] [--no-open]` (default: the current period so far; always overwrites; notifies and opens the browser), `report catch-up`.
+  - Errors: `ConfigError`, `StoreError`, `SessionError` and `ControlError` print `worktime: …` to stderr and exit 1. For `start`, `stop`, `dashboard` and `report` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
 
 ## Workflow
 
@@ -141,8 +155,9 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–6 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool). 261 unit tests pass. Basil visually confirmed the notification, the browser opening, and both dashboard parts (including dark mode).
-- Open: roadmap items 7–10.
+- Implemented: tasks 1–7 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool, HTML reports with automatic catch-up). 296 unit tests pass. Basil visually confirmed the notification, the browser opening, both dashboard parts (including dark mode) and the weekly and monthly reports (including print preview).
+- Open: roadmap items 8–10.
+- Test-writing note for executors: never put "wait for another executor's file" loops or skips into test files. Waiting belongs only in the executor's own work session.
 - To do in task 8/9: unexpected exceptions (e.g. an unwritable data folder) currently produce only a traceback and no notification. Add a catch-all error notification for shortcut-triggered commands.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
@@ -162,7 +177,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 4. ✅ **Web server and JSON API** (done 2026-09-23): `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
 5. ✅ **Dashboard part 1** (done 2026-09-23; reference: `example-dashboard.jpeg`): layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. ✅ **Dashboard part 2** (done 2026-09-23): weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
-7. **Reports:** `report week|month [--date]` as self-contained HTML with stats and SVG charts (daily bars, trend line), saved to `reports/`.
+7. ✅ **Reports** (done 2026-09-23): `report week|month [--last|--date] [--no-open]` as self-contained HTML with stats, SVG charts (daily bars, cumulative worked vs. target) and a daily table in `reports/`. Automatic catch-up for the last complete week and month on `start` / `dashboard`. HTML only, no PDF.
 8. **macOS launcher layer:** Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
 9. **Linux launcher layer:** i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
 10. **README and end-to-end check:** `README.md` describing installation, configuration and daily usage on **both macOS and Linux Debian** (shortcuts, dashboard, reports, CSV format, troubleshooting), plus an end-to-end check on both OSes.
@@ -170,6 +185,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 ## Setup and run
 
 - Requirements: Python 3.11+ (macOS: Homebrew `python3`; Debian 12+: system `python3`). Linux notifications: `notify-send` (`libnotify-bin`) + a notification daemon (e.g. dunst).
+- Reports: `bin/worktime report week` (this week so far), `bin/worktime report month --last`, `bin/worktime report week --date 2026-09-23`. They are created automatically after `start` / `dashboard` (disable with `WORKTIME_NO_AUTO_REPORTS=1`).
 - Show effective config: `bin/worktime config` (`bin/worktime --version`)
 - Track time: `bin/worktime start [--at HH:MM]`, `bin/worktime stop [--at HH:MM]`, `bin/worktime status`
 - Quiet mode for development: `WORKTIME_NO_NOTIFY=1 bin/worktime …`
@@ -188,3 +204,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 4: local web server (`server.py`, 127.0.0.1 only, Host check, safe static serving), `/api/health` and `/api/dashboard` JSON (all durations in seconds), `stats.daily_targets`, background lifecycle (`control.py`: probe, detached start, PID file, stop), `browser.py`, CLI `serve`/`dashboard`/`stop-server`, placeholder `web/index.html`. 245 tests.
 - 2026-09-23: Task 5: dashboard part 1 (English UI): header with live status, balance cards, remembered range filter with summary, "Hours per day" bar chart with a target line and tooltips, dark mode, 60 s refresh, error banner. Chart.js 4.4.1 vendored. `tools/make_demo_data.py`. Static-asset, offline and no-`innerHTML` tests. 261 tests.
 - 2026-09-23: Task 6: dashboard part 2: "Actual vs. target" trend chart (area plus dashed target line, Weekly/Monthly toggle remembered, crosshair, tooltip with balance and cumulative) and the "Recent sessions (latest 50)" table (running badge, next-day marker). The dashboard is complete.
+- 2026-09-23: Task 7: `worktime/report.py` (self-contained HTML reports with SVG charts, tiles and a daily table, A4 print stylesheet, final/in-progress marker), CLI `report week|month|catch-up`, automatic background catch-up after `start`/`dashboard`. 296 tests.

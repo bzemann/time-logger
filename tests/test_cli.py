@@ -8,13 +8,18 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
+
+from worktime import cli, control
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKTIME_BIN = REPO_ROOT / "bin" / "worktime"
@@ -169,6 +174,7 @@ class SessionCommandTests(unittest.TestCase):
         env = dict(os.environ)
         env["WORKTIME_CONFIG"] = str(cfg_path)
         env["WORKTIME_NO_NOTIFY"] = "1"
+        env["WORKTIME_NO_AUTO_REPORTS"] = "1"
         return env, data_file
 
     def test_start_then_start_again(self):
@@ -246,6 +252,95 @@ class SessionCommandTests(unittest.TestCase):
             self.assertIn("invalid time", result.stderr)
 
 
+class AutoCatchUpUnitTests(unittest.TestCase):
+    """Unit tests for cli._maybe_start_catch_up, run in-process.
+
+    ``worktime.report.due_reports`` is patched directly (rather than
+    injecting a fake module via ``sys.modules``) so these tests are
+    unaffected by import order: once any other test module has done
+    ``from worktime import report``, that import gets cached as an
+    attribute on the ``worktime`` package, which a ``sys.modules`` patch
+    alone would not override.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        tmp_path = Path(self._tmpdir.name)
+        self.cfg = mock.Mock()
+        self.cfg.data_file = tmp_path / "data" / "worktime.csv"
+        self.now = mock.Mock()
+
+    def test_disabled_env_skips_everything(self):
+        with mock.patch.dict(
+            os.environ, {"WORKTIME_NO_AUTO_REPORTS": "1"}
+        ), mock.patch(
+            "worktime.report.due_reports", return_value=[mock.Mock()]
+        ) as due_reports, mock.patch(
+            "worktime.cli.subprocess.Popen"
+        ) as popen:
+            cli._maybe_start_catch_up(self.cfg, self.now)
+
+        popen.assert_not_called()
+        due_reports.assert_not_called()
+
+    def test_no_due_reports_skips_popen(self):
+        with mock.patch.dict(
+            os.environ, {"WORKTIME_NO_AUTO_REPORTS": "0"}
+        ), mock.patch(
+            "worktime.report.due_reports", return_value=[]
+        ) as due_reports, mock.patch(
+            "worktime.cli.subprocess.Popen"
+        ) as popen:
+            cli._maybe_start_catch_up(self.cfg, self.now)
+
+        popen.assert_not_called()
+        due_reports.assert_called_once_with(self.cfg, self.now)
+
+    def test_due_reports_error_is_swallowed(self):
+        with mock.patch.dict(
+            os.environ, {"WORKTIME_NO_AUTO_REPORTS": "0"}
+        ), mock.patch(
+            "worktime.report.due_reports", side_effect=RuntimeError("boom")
+        ), mock.patch(
+            "worktime.cli.subprocess.Popen"
+        ) as popen:
+            cli._maybe_start_catch_up(self.cfg, self.now)  # must not raise
+
+        popen.assert_not_called()
+
+    def test_due_reports_spawns_detached_catch_up(self):
+        with mock.patch.dict(
+            os.environ, {"WORKTIME_NO_AUTO_REPORTS": "0"}
+        ), mock.patch(
+            "worktime.report.due_reports", return_value=[mock.Mock()]
+        ), mock.patch(
+            "worktime.cli.subprocess.Popen"
+        ) as popen:
+            cli._maybe_start_catch_up(self.cfg, self.now)
+
+        popen.assert_called_once()
+        args, kwargs = popen.call_args
+        self.assertEqual(
+            args[0], [sys.executable, "-m", "worktime", "report", "catch-up"]
+        )
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertTrue(
+            kwargs["env"]["PYTHONPATH"].startswith(str(control.REPO_ROOT))
+        )
+
+    def test_popen_oserror_is_swallowed(self):
+        with mock.patch.dict(
+            os.environ, {"WORKTIME_NO_AUTO_REPORTS": "0"}
+        ), mock.patch(
+            "worktime.report.due_reports", return_value=[mock.Mock()]
+        ), mock.patch(
+            "worktime.cli.subprocess.Popen", side_effect=OSError("no fork")
+        ):
+            cli._maybe_start_catch_up(self.cfg, self.now)  # must not raise
+
+
 class DashboardServerTests(unittest.TestCase):
     def _env(self, tmp_path: Path, port: int):
         cfg_path = tmp_path / "config.toml"
@@ -257,6 +352,7 @@ class DashboardServerTests(unittest.TestCase):
         env["WORKTIME_CONFIG"] = str(cfg_path)
         env["WORKTIME_NO_NOTIFY"] = "1"
         env["WORKTIME_NO_BROWSER"] = "1"
+        env["WORKTIME_NO_AUTO_REPORTS"] = "1"
         return env, data_file
 
     def _kill_leftover_pid(self, data_file: Path):
@@ -348,6 +444,185 @@ class DashboardServerTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+
+def _write_workday_csv(data_file: Path) -> None:
+    """Write finished 08:00-16:30 sessions for every weekday of the last 70 days.
+
+    This gives the previous complete week and the previous complete month
+    (and the current, in-progress week) real data to report on.
+    """
+    data_file.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["date,start,end,duration_min\n"]
+    today = date.today()
+    for i in range(70, 0, -1):
+        day = today - timedelta(days=i)
+        if day.weekday() < 5:
+            lines.append(f"{day.isoformat()},08:00:00,16:30:00,510\n")
+    data_file.write_text("".join(lines), encoding="utf-8")
+
+
+class ReportCommandTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from worktime import report
+
+        cls.report = report
+
+    def _env(self, tmp_path: Path, *, auto_reports_disabled: bool = True):
+        cfg_path = tmp_path / "config.toml"
+        data_file = tmp_path / "data" / "worktime.csv"
+        cfg_path.write_text(f'data_file = "{data_file}"\n', encoding="utf-8")
+        env = dict(os.environ)
+        env["WORKTIME_CONFIG"] = str(cfg_path)
+        env["WORKTIME_NO_NOTIFY"] = "1"
+        env["WORKTIME_NO_BROWSER"] = "1"
+        if auto_reports_disabled:
+            env["WORKTIME_NO_AUTO_REPORTS"] = "1"
+        reports_dir = data_file.parent / "reports"
+        return env, data_file, reports_dir
+
+    def test_report_week_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            period = self.report.period_for("week", date.today())
+            result = run(["report", "week", "--no-open"], env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(
+                result.stdout.strip().endswith(f"{period.stem}.html"),
+                result.stdout,
+            )
+            self.assertTrue((reports_dir / f"{period.stem}.html").exists())
+
+    def test_report_month_last(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            period = self.report.previous_period("month", date.today())
+            result = run(["report", "month", "--last", "--no-open"], env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(
+                result.stdout.strip().endswith(f"{period.stem}.html"),
+                result.stdout,
+            )
+            self.assertTrue((reports_dir / f"{period.stem}.html").exists())
+
+    def test_report_week_with_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            result = run(
+                ["report", "week", "--date", "2026-09-23", "--no-open"], env=env
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = reports_dir / "week-2026-W39.html"
+            self.assertTrue(result.stdout.strip().endswith("week-2026-W39.html"))
+            self.assertTrue(expected.exists())
+
+    def test_report_last_and_date_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            result = run(["report", "week", "--last", "--date", "2026-09-23"], env=env)
+            self.assertEqual(result.returncode, 2)
+
+    def test_report_invalid_date_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            result = run(["report", "week", "--date", "2026-9-3"], env=env)
+            self.assertEqual(result.returncode, 2)
+
+    def test_report_catch_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            week_period = self.report.previous_period("week", date.today())
+            month_period = self.report.previous_period("month", date.today())
+
+            result = run(["report", "catch-up"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((reports_dir / f"{week_period.stem}.html").exists())
+            self.assertTrue((reports_dir / f"{month_period.stem}.html").exists())
+
+            result = run(["report", "catch-up"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "No reports due.")
+
+    def test_report_catch_up_rejects_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(tmp_path)
+            _write_workday_csv(data_file)
+
+            result = run(["report", "catch-up", "--no-open"], env=env)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("takes no options", result.stderr)
+
+    def test_auto_catch_up_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(
+                tmp_path, auto_reports_disabled=False
+            )
+            _write_workday_csv(data_file)
+
+            week_period = self.report.previous_period("week", date.today())
+            month_period = self.report.previous_period("month", date.today())
+            week_file = reports_dir / f"{week_period.stem}.html"
+            month_file = reports_dir / f"{month_period.stem}.html"
+
+            try:
+                result = run(["start"], env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    if week_file.exists() and month_file.exists():
+                        break
+                    time.sleep(0.2)
+
+                self.assertTrue(week_file.exists())
+                self.assertTrue(month_file.exists())
+            finally:
+                run(["stop"], env=env)
+
+    def test_auto_catch_up_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file, reports_dir = self._env(
+                tmp_path, auto_reports_disabled=True
+            )
+            _write_workday_csv(data_file)
+
+            try:
+                result = run(["start"], env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                time.sleep(2)
+
+                html_files = (
+                    list(reports_dir.glob("*.html")) if reports_dir.exists() else []
+                )
+                self.assertEqual(html_files, [])
+            finally:
+                run(["stop"], env=env)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import subprocess
 import sys
+from datetime import date
 
 from worktime import __version__, browser, control, session
 from worktime.config import ConfigError, load_config, config_path
@@ -14,6 +18,8 @@ from worktime.store import StoreError
 
 _WEEKDAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _TITLE = "WorkTime"
+_TRUE_VALUES = {"1", "true", "yes"}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _format_hmm(minutes: int) -> str:
@@ -55,6 +61,72 @@ def _cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_date(value: str) -> date:
+    """Parse a strict YYYY-MM-DD date for argparse's ``--date``."""
+    if not _DATE_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"invalid date: {value!r} (expected YYYY-MM-DD)"
+        )
+    try:
+        return date.fromisoformat(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"invalid date: {value!r} (expected YYYY-MM-DD)"
+        ) from e
+
+
+def _auto_reports_disabled() -> bool:
+    """Return True if the WORKTIME_NO_AUTO_REPORTS env var disables auto catch-up."""
+    value = os.environ.get("WORKTIME_NO_AUTO_REPORTS", "")
+    return value.strip().lower() in _TRUE_VALUES
+
+
+def _maybe_start_catch_up(cfg, now) -> None:
+    """Spawn a detached `worktime report catch-up` if any report is due.
+
+    Reports for the last complete week/month should appear at the first
+    `start`/`dashboard` invocation after the period ends. This runs in the
+    background (fire-and-forget, like `control.start_background` for the
+    server) so the shortcut that triggered it stays instant. Never raises:
+    any failure here must not break `start` or `dashboard`.
+    """
+    if _auto_reports_disabled():
+        return
+
+    try:
+        from worktime import report
+
+        due = report.due_reports(cfg, now)
+    except Exception:
+        return
+
+    if not due:
+        return
+
+    log_path = cfg.data_file.parent / "report.log"
+    env = os.environ.copy()
+    old_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(control.REPO_ROOT) + (
+        os.pathsep + old_pythonpath if old_pythonpath else ""
+    )
+
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "ab") as logf:
+            subprocess.Popen(
+                [sys.executable, "-m", "worktime", "report", "catch-up"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=logf,
+                start_new_session=True,
+                env=env,
+                cwd=str(control.REPO_ROOT),
+                close_fds=True,
+            )
+    except OSError:
+        return
+
+
 def _cmd_start(args: argparse.Namespace) -> int:
     cfg = load_config()
     now = session.current_time()
@@ -70,6 +142,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
         )
     notify(_TITLE, body)
     print(body)
+    _maybe_start_catch_up(cfg, now)
     return 0
 
 
@@ -140,12 +213,50 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
 
     opened = browser.open_url(url)
     print(url if opened else f"Open {url} in your browser")
+    now = session.current_time()
+    _maybe_start_catch_up(cfg, now)
     return 0
 
 
 def _cmd_stop_server(args: argparse.Namespace) -> int:
     cfg = load_config()
     print(control.stop_background(cfg))
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    from worktime import report
+
+    cfg = load_config()
+    now = session.current_time()
+
+    if args.kind == "catch-up":
+        if args.last or args.date or args.no_open:
+            raise ControlError("report catch-up takes no options")
+        due = report.due_reports(cfg, now)
+        if not due:
+            print("No reports due.")
+            return 0
+        for period in due:
+            path = report.write_report(cfg, period, now)
+            kind_label = "Weekly" if period.kind == "week" else "Monthly"
+            notify(_TITLE, f"{kind_label} report saved: {path.name}")
+            print(path)
+        return 0
+
+    if args.date:
+        period = report.period_for(args.kind, args.date)
+    elif args.last:
+        period = report.previous_period(args.kind, now.date())
+    else:
+        period = report.period_for(args.kind, now.date())
+
+    path = report.write_report(cfg, period, now)
+    kind_label = "Weekly" if period.kind == "week" else "Monthly"
+    notify(_TITLE, f"{kind_label} report saved: {path.name}")
+    print(path)
+    if not args.no_open:
+        browser.open_url(path.as_uri())
     return 0
 
 
@@ -193,6 +304,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "stop-server", help="Stop the background dashboard server"
     )
     stop_server_parser.set_defaults(func=_cmd_stop_server, notify_errors=False)
+
+    report_parser = subparsers.add_parser(
+        "report", help="Generate a weekly or monthly HTML report"
+    )
+    report_parser.add_argument("kind", choices=["week", "month", "catch-up"])
+    report_group = report_parser.add_mutually_exclusive_group()
+    report_group.add_argument(
+        "--last", action="store_true", help="Previous complete period"
+    )
+    report_group.add_argument(
+        "--date", type=_parse_date, help="Period containing this date"
+    )
+    report_parser.add_argument(
+        "--no-open", action="store_true", help="Do not open the report in the browser"
+    )
+    report_parser.set_defaults(func=_cmd_report, notify_errors=True)
 
     return parser
 
