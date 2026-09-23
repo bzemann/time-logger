@@ -35,7 +35,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - Daily balance = today's worked time − target. The target is 0 on days that aren't workdays.
 - **`worktime/server.py`:** `http.server` bound to `127.0.0.1`. It re-reads the CSV on every request.
   - `worktime dashboard` starts the server in the background if it isn't running, then opens the browser (`open` / `xdg-open`).
-- **`web/`:** The static dashboard (see the reference screenshot provided by Basil, minus all project elements).
+- **`web/`:** The static dashboard (reference: `example-dashboard.jpeg`, minus all project elements).
   - Header with Running status and generated timestamp.
   - Summary cards (today/week/month/total + daily balance).
   - Range filter (7d/30d/90d/this year/all/custom).
@@ -54,13 +54,20 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 - Max executors: 3
 - GitHub: private
-- Remote: none
+- Remote: https://github.com/bzemann/time-logger (SSH: git@github.com:bzemann/time-logger.git)
 
 ## Current status
 
 - Implemented: nothing yet (project setup only).
 - Open: all roadmap items.
-- Known issues / notes: Basil will provide the reference dashboard screenshot before tasks 5–6. Don't start them without it.
+- Known issues / notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
+  - Light theme with white rounded cards; the original UI labels are German.
+  - The "Läuft" status pill is green, with the generated timestamp next to it.
+  - Cards (Heute/Woche/Monat/Total) show the **balance vs. target** big (e.g. `+03:40`) and the worked time small below it. The "Heute" card shows worked time big and the balance small.
+  - The target line in the example is about 8.4h (42h/week), so the target must be configurable in hours and minutes.
+  - Weekly trend labels use ISO calendar weeks (KW39).
+  - Drop everything project-related: the project filter chips, the donut chart, stacked bars and the project column.
+  - Open question for task 5: UI language (German vs. English).
 
 ## Roadmap
 
@@ -68,7 +75,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 2. **Sessions, CLI and notifications:** `start` (status notification while running), `stop`, `status`, `notify.py` for macOS and Linux, unit tests with notifications mocked.
 3. **Stats module:** day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
 4. **Web server and JSON API:** `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
-5. **Dashboard part 1** *(needs screenshot)*: layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
+5. **Dashboard part 1** *(reference: `example-dashboard.jpeg`)*: layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. **Dashboard part 2:** weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. **Reports:** `report week|month [--date]` as self-contained HTML with stats and SVG charts (daily bars, trend line), saved to `reports/`.
 8. **macOS launcher layer:** Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
