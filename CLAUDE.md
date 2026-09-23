@@ -87,8 +87,26 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - **After code updates, run `worktime stop-server` once**, because a running server keeps serving the old code.
 - **`worktime/browser.py`:** `open_url(url)` uses `open` on macOS and `xdg-open` on Linux, falling back to `webbrowser`. It never raises. `WORKTIME_NO_BROWSER=1` disables it (the tests use this).
 - **`web/`:** The static dashboard (reference: `example-dashboard.jpeg`, minus all project elements). It fetches `/api/dashboard`.
-  - Currently `web/index.html` is a placeholder that shows the raw JSON. Tasks 5–6 replace it.
-  - Decided for task 5: the default range is **30 days**, and the page **remembers the last chosen range** in `localStorage`.
+  - Files:
+    - `index.html`: structure, with a CSP meta tag and no external URLs.
+    - `style.css`: all colors are CSS variables. Light theme like the screenshot; dark mode via `prefers-color-scheme`, with its own chosen values.
+    - `app.js`: plain JS in one IIFE, in 9 commented sections: formatting → theme tokens → range state → fetch → header → cards → range → daily chart → refresh/init.
+    - `vendor/chart.umd.js`: Chart.js **4.4.1**, vendored, with an MIT `LICENSE-chartjs.md`.
+  - UI language **English**. Dates are Swiss style `23.09.2026` (`Mon 21.09.` in the chart). Durations look like `7h 09m`. Balances look like `+3:40` / `−1:15` / `±0:00`, colored green or red but **always signed**, so they don't rely on color alone.
+  - The browser **only formats** and never computes stats. Data is inserted via `textContent` only; `tests/test_web.py` enforces no `innerHTML` and no external URLs.
+  - Part 1 (task 5):
+    - Header: "WorkTime", a status pill ("Running · 1h 24m" / "Not running") and the "Generated" timestamp.
+    - Cards: TODAY (big = worked, sub = balance + target), THIS WEEK / THIS MONTH / TOTAL (big = balance, sub = worked + target; TOTAL adds "since").
+    - Range card: presets 7d/30d/90d/year/all plus custom dates, with a range summary line. **Default 30 days, remembered in `localStorage`** (`worktime.range.v1`).
+    - "Hours per day" bar chart: single blue series, no legend, ≤24px bars with rounded tops. A custom `targetLine` plugin draws the dashed "Target 8:30" line. The tooltip shows worked / target / balance, plus "(running)" for today.
+  - Behavior:
+    - It refreshes every 60 s and on focus or visibility.
+    - Stale responses are ignored by sequence number.
+    - While loading, the previous render stays visible (dimmed).
+    - Errors show in a banner.
+    - The chart instance is updated in place, never recreated.
+  - Task 6 adds its sections at the `<!-- Task 6 … -->` marker in `index.html`. Its table heading must say "Recent sessions (latest 50)", because the table is deliberately not range-filtered.
+- **`tools/make_demo_data.py PATH [--days 120] [--seed 1] [--now …] [--no-running] [--force]`:** a reproducible, realistic demo CSV (written via `store.write_entries`). It refuses to overwrite without `--force`. Use it with a temporary config pointed at by `WORKTIME_CONFIG` to try the dashboard or reports without touching real data.
   - Header with Running status and generated timestamp.
   - Summary cards (today/week/month/total + daily balance).
   - Range filter (7d/30d/90d/this year/all/custom).
@@ -112,8 +130,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–4 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`). 245 unit tests pass. Basil visually confirmed the macOS notification and the browser opening the placeholder page.
-- Open: roadmap items 5–10.
+- Implemented: tasks 1–5 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, dashboard part 1, demo data tool). 261 unit tests pass. Basil visually confirmed the notification, the browser opening, and dashboard part 1 (layout, tooltip, ranges, remembering, dark mode).
+- Open: roadmap items 6–10.
 - To do in task 8/9: unexpected exceptions (e.g. an unwritable data folder) currently produce only a traceback and no notification. Add a catch-all error notification for shortcut-triggered commands.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
@@ -131,7 +149,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 2. ✅ **Sessions, CLI and notifications** (done 2026-09-23): `start` (status notification while running), `stop`, `status`, `notify.py` for macOS and Linux, unit tests with notifications mocked.
 3. ✅ **Stats module** (done 2026-09-23): day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
 4. ✅ **Web server and JSON API** (done 2026-09-23): `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
-5. **Dashboard part 1** *(reference: `example-dashboard.jpeg`)*: layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
+5. ✅ **Dashboard part 1** (done 2026-09-23; reference: `example-dashboard.jpeg`): layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. **Dashboard part 2:** weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. **Reports:** `report week|month [--date]` as self-contained HTML with stats and SVG charts (daily bars, trend line), saved to `reports/`.
 8. **macOS launcher layer:** Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
@@ -146,6 +164,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Quiet mode for development: `WORKTIME_NO_NOTIFY=1 bin/worktime …`
 - Dashboard: `bin/worktime dashboard` (starts the server in the background and opens the browser). Stop it: `bin/worktime stop-server`. Foreground for debugging: `bin/worktime serve [--port N]`
 - Quiet mode for tests: `WORKTIME_NO_NOTIFY=1 WORKTIME_NO_BROWSER=1`
+- Try with demo data: `python3 tools/make_demo_data.py /tmp/wt-demo/wt.csv`, then write `/tmp/wt-demo/c.toml` with `data_file = "/tmp/wt-demo/wt.csv"` and `port = 8799`, then run `WORKTIME_CONFIG=/tmp/wt-demo/c.toml bin/worktime dashboard`
+- JS syntax check (dev only, needs node): `node --check web/app.js`
 - Tests: `python3 -m unittest discover -s tests`
 
 ## Changelog
@@ -155,3 +175,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 2: `start`/`stop`/`status` with `--at HH:MM`, 24h and overlap protection, desktop notifications (`osascript` / `notify-send`, stderr fallback, `WORKTIME_NO_NOTIFY`), error notifications for shortcut commands. 117 tests.
 - 2026-09-23: Task 3: `worktime/stats.py` (daily totals, period summaries, dashboard overview, week/month trend buckets, range presets) with the screenshot's balance semantics. New config key `days_off` for vacation and holidays. 179 tests.
 - 2026-09-23: Task 4: local web server (`server.py`, 127.0.0.1 only, Host check, safe static serving), `/api/health` and `/api/dashboard` JSON (all durations in seconds), `stats.daily_targets`, background lifecycle (`control.py`: probe, detached start, PID file, stop), `browser.py`, CLI `serve`/`dashboard`/`stop-server`, placeholder `web/index.html`. 245 tests.
+- 2026-09-23: Task 5: dashboard part 1 (English UI): header with live status, balance cards, remembered range filter with summary, "Hours per day" bar chart with a target line and tooltips, dark mode, 60 s refresh, error banner. Chart.js 4.4.1 vendored. `tools/make_demo_data.py`. Static-asset, offline and no-`innerHTML` tests. 261 tests.
