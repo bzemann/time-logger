@@ -1,0 +1,23 @@
+# WorkTime Logger example configuration.
+#
+# Copy this file to ~/.config/worktime/config.toml (or point the
+# WORKTIME_CONFIG environment variable at a copy elsewhere) and edit it.
+# All keys are optional; anything left out falls back to the default shown
+# below.
+
+# Where sessions are stored (CSV). Defaults to
+# ~/.local/share/worktime/worktime.csv
+data_file = "~/.local/share/worktime/worktime.csv"
+
+# Where generated weekly/monthly reports are written. Defaults to a
+# "reports" directory next to data_file.
+reports_dir = "~/.local/share/worktime/reports"
+
+# Daily work time target, as "H:MM" or a number of hours (e.g. 8.5).
+daily_target = "8:30"
+
+# Days that count towards the daily target: mon, tue, wed, thu, fri, sat, sun.
+workdays = ["mon", "tue", "wed", "thu", "fri"]
+
+# Port the local dashboard server listens on (127.0.0.1 only).
+port = 8765

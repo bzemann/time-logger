@@ -1,0 +1,55 @@
+#!/bin/sh
+# This wrapper exists because shortcut launchers (Aerospace, i3, Spotlight)
+# run commands with a minimal PATH, where /usr/bin/python3 may be Apple's
+# system Python 3.9 (no tomllib). We resolve our own location, then pick
+# the first available Python interpreter that is actually >= 3.11.
+
+# Resolve the real path of this script, following symlinks, without
+# relying on `readlink -f` (not available on all systems, e.g. macOS).
+f="$0"
+while [ -L "$f" ]; do
+    link=$(readlink "$f")
+    case "$link" in
+        /*) f="$link" ;;
+        *) f="$(dirname "$f")/$link" ;;
+    esac
+done
+
+bin_dir=$(cd "$(dirname "$f")" && pwd -P)
+ROOT=$(cd "$bin_dir/.." && pwd -P)
+
+version_ok() {
+    "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+        >/dev/null 2>&1
+}
+
+py=""
+
+if [ -n "$WORKTIME_PYTHON" ] && version_ok "$WORKTIME_PYTHON"; then
+    py="$WORKTIME_PYTHON"
+fi
+
+if [ -z "$py" ]; then
+    cand=$(command -v python3 2>/dev/null)
+    if [ -n "$cand" ] && version_ok "$cand"; then
+        py="$cand"
+    fi
+fi
+
+if [ -z "$py" ]; then
+    for cand in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+        if [ -x "$cand" ] && version_ok "$cand"; then
+            py="$cand"
+            break
+        fi
+    done
+fi
+
+if [ -z "$py" ]; then
+    echo "worktime: no Python >= 3.11 found (set WORKTIME_PYTHON to override)" >&2
+    exit 1
+fi
+
+PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "$py" -m worktime "$@"

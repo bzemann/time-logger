@@ -19,17 +19,23 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
 ```
 
 - **Language / deps:** Python 3.11+ standard library only (`csv`, `datetime`, `http.server`, `tomllib`, `fcntl`, `unittest`). Chart.js is vendored in `web/vendor/`, with no CDN, so everything works offline.
+- **`bin/worktime`:** POSIX sh launcher. It follows symlinks, picks the first Python ≥ 3.11 (`$WORKTIME_PYTHON`, `python3` on PATH, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) and runs `python -m worktime`. It exists because shortcut launchers run with a minimal PATH, where macOS `/usr/bin/python3` is 3.9 (no `tomllib`).
 - **`worktime/store.py`:** CSV read/write. Columns: `date,start,end,duration_min` (e.g. `2026-09-23,08:12:05,12:30:40,258`).
   - Local time, `YYYY-MM-DD` / `HH:MM:SS`, UTF-8, `\n` line endings, header row.
   - A **running session** is the row with an empty `end` and `duration_min`. It is the only state, so there is no separate state file.
   - Writes are atomic (temp file + `os.replace`) and guarded by an `fcntl` lock file.
-  - A session crossing midnight belongs to its start date. `end < start` means the end is on the next day.
+  - A session crossing midnight belongs to its start date. `end < start` means the end is on the next day. So sessions must be under 24h (`Entry` raises `ValueError` otherwise).
+  - Timestamps are the truth. `duration_min` is written rounded half-up, but on read it is only syntax-checked, then recomputed.
+  - Strict reading: any malformed row raises `StoreError` with the line number. Only the last row may be running.
+  - API: `Entry(start, end=None)` (with `date`, `running`, `duration`, `duration_min`, `elapsed(now)`), `read_entries`, `write_entries` (sorts, atomic, mode 0600), `running_entry`, `locked(path, timeout)` (`fcntl.flock` on `<csv>.lock`), `update_entries(path, fn)` (lock + read + fn + write).
 - **`worktime/session.py`:** start/stop/status logic.
   - `start` with nothing running starts a session and notifies "Started at HH:MM".
   - `start` while a session is running only notifies "Currently running: 1h 24m".
   - `stop` closes the session and notifies the session duration and today's total.
 - **`worktime/notify.py`:** The only OS-specific part of the core. It uses `osascript` (macOS Notification Center) or `notify-send` (Linux/dunst).
-- **`worktime/config.py`:** TOML config: data path, daily target hours (default 8), workdays that count for the target (default Mon–Fri), server port.
+- **`worktime/config.py`:** TOML config, loaded into a frozen `Config(data_file, reports_dir, daily_target_min, workdays, port)`. Invalid values raise `ConfigError`.
+  - Location: `$WORKTIME_CONFIG`, else `$XDG_CONFIG_HOME/worktime/config.toml`, else `~/.config/worktime/config.toml`. A missing file means defaults. See `config.example.toml`.
+  - Keys: `data_file`, `reports_dir`, `daily_target` (`"H:MM"` or number of hours, **default 8:30**), `workdays` (default mon–fri; stored as 0=Mon), `port` (default 8765). Unknown keys are an error.
   - Default data path on both OSes: `~/.local/share/worktime/worktime.csv`. Reports go to `reports/` next to it.
 - **`worktime/stats.py`:** All aggregation (per day/week/month, target, balance, averages, longest session, session counts). The API and the reports both use it, so their numbers are consistent.
   - Daily balance = today's worked time − target. The target is 0 on days that aren't workdays.
@@ -44,7 +50,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - Recent-entries table with a running flag.
 - **`worktime/report.py`:** Weekly and monthly reports as self-contained HTML with inline SVG charts drawn by Python. It includes total hours, average per day, sessions, longest session and over/under target.
 - **`platform/macos/`, `platform/linux/`:** Thin launcher layer: keybinding snippets (Aerospace / i3), Spotlight `.app` bundles in `~/Applications` / rofi `.desktop` entries, and install scripts that **print** snippets rather than editing WM configs.
-- **CLI:** `worktime start | stop | status | dashboard | serve | report week|month [--date YYYY-MM-DD]`.
+- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented so far: `--version` and `config` (prints the effective config). Planned: `worktime start | stop | status | dashboard | serve | report week|month [--date YYYY-MM-DD]`.
 
 ## Workflow
 
@@ -58,9 +64,10 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: nothing yet (project setup only).
-- Open: all roadmap items.
-- Known issues / notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
+- Implemented: task 1 (launcher `bin/worktime`, CLI skeleton with `--version`/`config`, `config.py`, `store.py`). 64 unit tests pass.
+- Open: roadmap items 2–10.
+- Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented; task 2 must decide what `stop` does for a forgotten session (e.g. cap it and notify).
+- Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
   - Light theme with white rounded cards; the original UI labels are German.
   - The "Läuft" status pill is green, with the generated timestamp next to it.
   - Cards (Heute/Woche/Monat/Total) show the **balance vs. target** big (e.g. `+03:40`) and the worked time small below it. The "Heute" card shows worked time big and the balance small.
@@ -71,7 +78,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Roadmap
 
-1. **Skeleton, config and CSV store:** package layout, `bin/worktime`, `config.py`, `store.py` (format, atomic write, lock, midnight rule), unit tests.
+1. ✅ **Skeleton, config and CSV store** (done 2026-09-23): package layout, `bin/worktime`, `config.py`, `store.py` (format, atomic write, lock, midnight rule), unit tests.
 2. **Sessions, CLI and notifications:** `start` (status notification while running), `stop`, `status`, `notify.py` for macOS and Linux, unit tests with notifications mocked.
 3. **Stats module:** day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
 4. **Web server and JSON API:** `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
@@ -85,10 +92,12 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 ## Setup and run
 
 - Requirements: Python 3.11+ (macOS: Homebrew `python3`; Debian 12+: system `python3`). Linux notifications: `notify-send` (`libnotify-bin`) + a notification daemon (e.g. dunst).
-- Run (once task 1–2 exist): `bin/worktime start | stop | status`
+- Show effective config: `bin/worktime config` (`bin/worktime --version`)
+- Run (after task 2): `bin/worktime start | stop | status`
 - Dashboard (after task 4): `bin/worktime dashboard`
 - Tests: `python3 -m unittest discover -s tests`
 
 ## Changelog
 
 - 2026-09-23: Project setup: Git (`main`), `.gitignore`, `.claude/settings.json` (Planner agent), `CLAUDE.md` with architecture and roadmap, private GitHub repo.
+- 2026-09-23: Task 1: `bin/worktime` launcher (finds Python ≥ 3.11 under a minimal PATH), CLI skeleton, TOML config (default target 8:30), strict CSV store with atomic writes and `flock` locking, 64 unit tests.
