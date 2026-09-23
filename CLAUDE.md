@@ -86,7 +86,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - `stop_background(cfg)` reads the PID file, checks the server is ours, sends SIGTERM and waits. It also cleans up stale or invalid PID files.
   - **After code updates, run `worktime stop-server` once**, because a running server keeps serving the old code.
 - **`worktime/browser.py`:** `open_url(url)` uses `open` on macOS and `xdg-open` on Linux, falling back to `webbrowser`. It never raises. `WORKTIME_NO_BROWSER=1` disables it (the tests use this).
-- **`web/`:** The static dashboard (reference: `example-dashboard.jpeg`, minus all project elements). It fetches `/api/dashboard`.
+- **`web/`:** The static dashboard (reference: `docs/reference-dashboard.jpeg`, minus all project elements). It fetches `/api/dashboard`.
   - Files:
     - `index.html`: structure, with a CSP meta tag and no external URLs.
     - `style.css`: all colors are CSS variables. Light theme like the screenshot; dark mode via `prefers-color-scheme`, with its own chosen values.
@@ -175,6 +175,11 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
     - It tries the data folder first, then `~/.local/share/worktime/`. The detail text is capped at 200 characters.
   - Terminal commands (`status`, `config`, `serve`, …) re-raise, so their traceback stays visible.
   - `bin/worktime` itself notifies (via `osascript` or `notify-send`, respecting `WORKTIME_NO_NOTIFY`) when no Python ≥ 3.11 is found.
+- **Documentation and tests:**
+  - `README.md` is the user-facing manual: installation for both OSes, daily use, command reference, dashboard, reports, configuration and environment variables, balance rules, data format, troubleshooting, updating, development.
+  - `tests/test_readme.py` fails if any CLI subcommand or option, `WORKTIME_*` variable (in `worktime/`, `bin/`, `platform/`, `tools/`) or config key is undocumented, if the README mentions a non-existent variable, or if its CSV example rows are inconsistent. **When adding a command, option, env var or config key, update `README.md` too.**
+  - `tests/test_e2e.py` runs the whole daily flow through the real `bin/worktime`: status → start → start → dashboard + API → stop → report week → report catch-up → stop-server. It uses a temp config and a free port, and asserts the real CSV is untouched.
+  - The reference screenshot lives in `docs/reference-dashboard.jpeg`, the old German tool with project elements. It is not shown in the README.
 - **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. `report week|month [--last | --date YYYY-MM-DD] [--no-open]` (default: the current period so far; always overwrites; notifies and opens the browser), `report catch-up`.
   - Errors: `ConfigError`, `StoreError`, `SessionError` and `ControlError` print `worktime: …` to stderr and exit 1. For `start`, `stop`, `dashboard` and `report` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
 
@@ -193,10 +198,11 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Implemented: tasks 1–8 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool, HTML reports with automatic catch-up, the macOS launcher layer, the unexpected-error catch-all). 321 unit tests pass. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
 - Basil's real CSV was reset to header-only on 2026-09-23 (test sessions removed; backup in the session scratchpad only). Real tracking starts from there.
 - Task 9 (Linux layer) is implemented and tested on macOS in test mode (342 tests pass), but **not yet verified on Basil's Debian machine**. The repo isn't cloned there yet. Next step there: follow `platform/linux/README.md` ("Getting it onto Debian", then the checklist). Fix any Debian findings in a follow-up `/task`.
-- Open: roadmap item 10 (and the Debian check of item 9).
+- Task 10 done: `README.md`, `tests/test_readme.py` and `tests/test_e2e.py`. 354 unit tests pass.
+- **The roadmap is complete.** Open: the Debian verification of task 9 (Basil runs `platform/linux/README.md` on the Debian machine; fix any findings in a follow-up `/task`).
 - Test-writing note for executors: never put "wait for another executor's file" loops or skips into test files. Waiting belongs only in the executor's own work session.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
-- Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
+- Notes: the reference dashboard screenshot is `docs/reference-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
   - Light theme with white rounded cards; the original UI labels are German.
   - The "Läuft" status pill is green, with the generated timestamp next to it.
   - Cards (Heute/Woche/Monat/Total) show the **balance vs. target** big (e.g. `+03:40`) and the worked time small below it. The "Heute" card shows worked time big and the balance small.
@@ -211,12 +217,12 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 2. ✅ **Sessions, CLI and notifications** (done 2026-09-23): `start` (status notification while running), `stop`, `status`, `notify.py` for macOS and Linux, unit tests with notifications mocked.
 3. ✅ **Stats module** (done 2026-09-23): day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
 4. ✅ **Web server and JSON API** (done 2026-09-23): `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
-5. ✅ **Dashboard part 1** (done 2026-09-23; reference: `example-dashboard.jpeg`): layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
+5. ✅ **Dashboard part 1** (done 2026-09-23; reference: `docs/reference-dashboard.jpeg`): layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. ✅ **Dashboard part 2** (done 2026-09-23): weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. ✅ **Reports** (done 2026-09-23): `report week|month [--last|--date] [--no-open]` as self-contained HTML with stats, SVG charts (daily bars, cumulative worked vs. target) and a daily table in `reports/`. Automatic catch-up for the last complete week and month on `start` / `dashboard`. HTML only, no PDF.
 8. ✅ **macOS launcher layer** (done 2026-09-23): Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
 9. ✅ **Linux launcher layer** (implemented 2026-09-23, Debian check pending): i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
-10. **README and end-to-end check:** `README.md` describing installation, configuration and daily usage on **both macOS and Linux Debian** (shortcuts, dashboard, reports, CSV format, troubleshooting), plus an end-to-end check on both OSes.
+10. ✅ **README and end-to-end check** (done 2026-09-23): `README.md` describing installation, configuration and daily usage on **both macOS and Linux Debian** (shortcuts, dashboard, reports, CSV format, troubleshooting), plus an end-to-end check on both OSes.
 
 ## Setup and run
 
@@ -232,7 +238,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Quiet mode for tests: `WORKTIME_NO_NOTIFY=1 WORKTIME_NO_BROWSER=1`
 - Try with demo data: `python3 tools/make_demo_data.py /tmp/wt-demo/wt.csv`, then write `/tmp/wt-demo/c.toml` with `data_file = "/tmp/wt-demo/wt.csv"` and `port = 8799`, then run `WORKTIME_CONFIG=/tmp/wt-demo/c.toml bin/worktime dashboard`
 - JS syntax check (dev only, needs node): `node --check web/app.js`
-- Tests: `python3 -m unittest discover -s tests`
+- Tests: `python3 -m unittest discover -s tests` (354 tests, about 20 s; macOS-only installer tests are skipped on Linux)
+- User manual: `README.md`
 
 ## Changelog
 
@@ -246,3 +253,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 7: `worktime/report.py` (self-contained HTML reports with SVG charts, tiles and a daily table, A4 print stylesheet, final/in-progress marker), CLI `report week|month|catch-up`, automatic background catch-up after `start`/`dashboard`. 296 tests.
 - 2026-09-23: Task 8: macOS launcher layer (`platform/macos/install.sh`: 5 ad-hoc signed Spotlight launchers, a `~/.local/bin` symlink, printed Aerospace bindings alt-shift-t/x/d/r), a catch-all notification plus `error.log` for unexpected errors in shortcut commands, and a `bin/worktime` notification when no Python is found. Installed and verified on Basil's Mac. Real CSV reset. 321 tests.
 - 2026-09-23: Task 9: Linux launcher layer (`platform/linux/install.sh`: 5 rofi `.desktop` entries, a `~/.local/bin` symlink, apt hints, printed i3 bindings $mod+Shift+t/x/d/w with a conflict check; README with Debian setup and checklist). Tested on macOS in test mode; the Debian check is pending. 342 tests.
+- 2026-09-23: Task 10: main `README.md` (both OSes, all commands, config, data, troubleshooting), `tests/test_readme.py` (docs-in-sync guard), `tests/test_e2e.py` (full daily flow). Reference screenshot moved to `docs/`. Roadmap complete; the Debian check is pending. 354 tests.
