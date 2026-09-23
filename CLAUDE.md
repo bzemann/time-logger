@@ -90,7 +90,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - Files:
     - `index.html`: structure, with a CSP meta tag and no external URLs.
     - `style.css`: all colors are CSS variables. Light theme like the screenshot; dark mode via `prefers-color-scheme`, with its own chosen values.
-    - `app.js`: plain JS in one IIFE, in 9 commented sections: formatting → theme tokens → range state → fetch → header → cards → range → daily chart → refresh/init.
+    - `app.js`: plain JS in one IIFE, in 11 commented sections: formatting → theme tokens → range + trend-unit state → fetch → header → cards → range → daily chart → trend chart → sessions table → refresh/init.
     - `vendor/chart.umd.js`: Chart.js **4.4.1**, vendored, with an MIT `LICENSE-chartjs.md`.
   - UI language **English**. Dates are Swiss style `23.09.2026` (`Mon 21.09.` in the chart). Durations look like `7h 09m`. Balances look like `+3:40` / `−1:15` / `±0:00`, colored green or red but **always signed**, so they don't rely on color alone.
   - The browser **only formats** and never computes stats. Data is inserted via `textContent` only; `tests/test_web.py` enforces no `innerHTML` and no external URLs.
@@ -105,7 +105,18 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
     - While loading, the previous render stays visible (dimmed).
     - Errors show in a banner.
     - The chart instance is updated in place, never recreated.
-  - Task 6 adds its sections at the `<!-- Task 6 … -->` marker in `index.html`. Its table heading must say "Recent sessions (latest 50)", because the table is deliberately not range-filtered.
+  - Part 2 (task 6):
+    - "Actual vs. target" trend chart, covering the selected range:
+      - Chart.js line chart: worked hours as a blue area (2px line, `--series-wash` fill, 8px dots with a surface ring) and target hours as a dashed gray line. HTML legend "Worked / Target".
+      - **Weekly | Monthly** toggle in the card header (default Weekly, remembered in `localStorage` as `worktime.trend.v1`). It re-fetches with `unit=`.
+      - A `crosshair` plugin draws a vertical hairline at the hovered period.
+      - Tooltip: title "W39 · 21.09.–27.09.2026" or "September 2026" (clipped edge periods show their dates), then Worked / Target / Balance / Cumulative. X-axis labels "W39" / "Sep 26".
+      - The cumulative balance is deliberately **only in the tooltip**, not drawn as a third line (Basil's decision).
+    - "Recent sessions (latest 50)" table, deliberately **not range-filtered**:
+      - Columns Date / Start / End / Duration, with `tabular-nums`.
+      - The running row is highlighted and shows a "● Running" badge.
+      - A session ending after midnight shows "00:20 (+1)".
+      - Empty state: "No sessions yet…".
 - **`tools/make_demo_data.py PATH [--days 120] [--seed 1] [--now …] [--no-running] [--force]`:** a reproducible, realistic demo CSV (written via `store.write_entries`). It refuses to overwrite without `--force`. Use it with a temporary config pointed at by `WORKTIME_CONFIG` to try the dashboard or reports without touching real data.
   - Header with Running status and generated timestamp.
   - Summary cards (today/week/month/total + daily balance).
@@ -130,8 +141,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–5 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, dashboard part 1, demo data tool). 261 unit tests pass. Basil visually confirmed the notification, the browser opening, and dashboard part 1 (layout, tooltip, ranges, remembering, dark mode).
-- Open: roadmap items 6–10.
+- Implemented: tasks 1–6 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool). 261 unit tests pass. Basil visually confirmed the notification, the browser opening, and both dashboard parts (including dark mode).
+- Open: roadmap items 7–10.
 - To do in task 8/9: unexpected exceptions (e.g. an unwritable data folder) currently produce only a traceback and no notification. Add a catch-all error notification for shortcut-triggered commands.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
@@ -150,7 +161,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 3. ✅ **Stats module** (done 2026-09-23): day/week/month aggregation, target and balance, averages, longest session, session counts, unit tests.
 4. ✅ **Web server and JSON API** (done 2026-09-23): `serve`, `dashboard` (auto-start + open browser), endpoints for status, summary and entries by range.
 5. ✅ **Dashboard part 1** (done 2026-09-23; reference: `example-dashboard.jpeg`): layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
-6. **Dashboard part 2:** weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
+6. ✅ **Dashboard part 2** (done 2026-09-23): weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. **Reports:** `report week|month [--date]` as self-contained HTML with stats and SVG charts (daily bars, trend line), saved to `reports/`.
 8. **macOS launcher layer:** Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
 9. **Linux launcher layer:** i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
@@ -176,3 +187,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 3: `worktime/stats.py` (daily totals, period summaries, dashboard overview, week/month trend buckets, range presets) with the screenshot's balance semantics. New config key `days_off` for vacation and holidays. 179 tests.
 - 2026-09-23: Task 4: local web server (`server.py`, 127.0.0.1 only, Host check, safe static serving), `/api/health` and `/api/dashboard` JSON (all durations in seconds), `stats.daily_targets`, background lifecycle (`control.py`: probe, detached start, PID file, stop), `browser.py`, CLI `serve`/`dashboard`/`stop-server`, placeholder `web/index.html`. 245 tests.
 - 2026-09-23: Task 5: dashboard part 1 (English UI): header with live status, balance cards, remembered range filter with summary, "Hours per day" bar chart with a target line and tooltips, dark mode, 60 s refresh, error banner. Chart.js 4.4.1 vendored. `tools/make_demo_data.py`. Static-asset, offline and no-`innerHTML` tests. 261 tests.
+- 2026-09-23: Task 6: dashboard part 2: "Actual vs. target" trend chart (area plus dashed target line, Weekly/Monthly toggle remembered, crosshair, tooltip with balance and cumulative) and the "Recent sessions (latest 50)" table (running badge, next-day marker). The dashboard is complete.

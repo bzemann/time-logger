@@ -90,6 +90,57 @@
     return `${fmtDate(datePart)} ${timePart.slice(0, 5)}`;
   }
 
+  const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const MONTHS_LONG = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
+  // "2026-09-21" -> "21.09."
+  function fmtDDMM(str) {
+    const p = parseYMD(str);
+    return `${p.ds}.${p.ms}.`;
+  }
+
+  // "15:01:00" -> "15:01"
+  function fmtHHMM(str) {
+    return str.slice(0, 5);
+  }
+
+  // "2026-W39" -> "W39"
+  function weekShort(label) {
+    return label.split('-')[1];
+  }
+
+  // "2026-09" -> "Sep 26"
+  function monthShort(label) {
+    const [yyyy, mm] = label.split('-');
+    return `${MONTHS_SHORT[Number(mm) - 1]} ${yyyy.slice(2)}`;
+  }
+
+  // Tooltip title for a trend bucket, e.g. "W39 · 21.09.–27.09.2026" or
+  // "September 2026" (" · 21.09.–25.09." if the bucket is clipped to the
+  // requested range).
+  function trendTitle(bucket, unit) {
+    const start = parseYMD(bucket.start);
+    const end = parseYMD(bucket.end);
+
+    if (unit === 'week') {
+      const startPart = start.y === end.y ? fmtDDMM(bucket.start) : fmtDate(bucket.start);
+      return `${weekShort(bucket.label)} · ${startPart}–${fmtDate(bucket.end)}`;
+    }
+
+    const [yyyy, mm] = bucket.label.split('-');
+    const m = Number(mm);
+    const lastDay = new Date(Number(yyyy), m, 0).getDate();
+    let title = `${MONTHS_LONG[m - 1]} ${yyyy}`;
+    const clipped = start.ds !== '01' || end.d !== lastDay;
+    if (clipped) {
+      title += ` · ${fmtDDMM(bucket.start)}–${fmtDDMM(bucket.end)}`;
+    }
+    return title;
+  }
+
   // ------------------------------------------------------------------
   // (2) Theme tokens - read the CSS custom properties so the canvas
   // chart (which CSS can't reach) matches the current color scheme.
@@ -106,6 +157,8 @@
       axis: get('--axis'),
       series: get('--series'),
       seriesHover: get('--series-hover'),
+      seriesWash: get('--series-wash'),
+      surface: get('--surface'),
       targetLine: get('--target-line'),
       tooltipBg: get('--tooltip-bg'),
       tooltipText: get('--tooltip-text'),
@@ -151,15 +204,63 @@
 
   let rangeState = loadRangeState();
 
+  const TREND_STORAGE_KEY = 'worktime.trend.v1';
+  const UNIT_KEYS = ['week', 'month'];
+  const DEFAULT_TREND_STATE = { unit: 'week' };
+
+  function loadTrendState() {
+    try {
+      const raw = localStorage.getItem(TREND_STORAGE_KEY);
+      if (!raw) return { ...DEFAULT_TREND_STATE };
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && UNIT_KEYS.includes(parsed.unit)) {
+        return { unit: parsed.unit };
+      }
+    } catch (e) {
+      // localStorage may be unavailable, or the stored value may be
+      // garbage; fall through to the default.
+    }
+    return { ...DEFAULT_TREND_STATE };
+  }
+
+  function saveTrendState(state) {
+    try {
+      localStorage.setItem(TREND_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      // Ignore: nothing sensible to do if storage isn't available.
+    }
+  }
+
+  let trendState = loadTrendState();
+
+  function syncUnitToggleButtons() {
+    document.querySelectorAll('#unit-toggle .unit-btn').forEach((btn) => {
+      btn.setAttribute('aria-pressed', btn.dataset.unit === trendState.unit ? 'true' : 'false');
+    });
+  }
+
+  function setupUnitToggle() {
+    document.querySelectorAll('#unit-toggle .unit-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        trendState = { unit: btn.dataset.unit };
+        saveTrendState(trendState);
+        syncUnitToggleButtons();
+        loadAndRender();
+      });
+    });
+    syncUnitToggleButtons();
+  }
+
   // ------------------------------------------------------------------
   // (4) API fetch
   // ------------------------------------------------------------------
 
   function buildQuery(state) {
+    const unit = encodeURIComponent(trendState.unit);
     if (state.preset) {
-      return `range=${encodeURIComponent(state.preset)}&unit=week`;
+      return `range=${encodeURIComponent(state.preset)}&unit=${unit}`;
     }
-    return `start=${encodeURIComponent(state.start)}&end=${encodeURIComponent(state.end)}&unit=week`;
+    return `start=${encodeURIComponent(state.start)}&end=${encodeURIComponent(state.end)}&unit=${unit}`;
   }
 
   async function fetchDashboard(state) {
@@ -549,7 +650,246 @@
   }
 
   // ------------------------------------------------------------------
-  // (9) Refresh loop + init
+  // (9) Trend chart (Chart.js line chart): actual vs. target per week or
+  // month, with a crosshair on hover. The HTML legend above the canvas is
+  // static, so the chart's own legend is disabled.
+  // ------------------------------------------------------------------
+
+  // Data the tooltip callbacks and the x-axis tick callback read; updated
+  // on every render so the chart instance itself never needs to be rebuilt.
+  let trendBuckets = [];
+  let trendUnit = 'week';
+
+  const crosshairPlugin = {
+    id: 'crosshair',
+    beforeDatasetsDraw(chart) {
+      const active = chart.tooltip && chart.tooltip.getActiveElements();
+      if (!active || !active.length) return;
+      const { ctx, chartArea } = chart;
+      const x = active[0].element.x;
+      ctx.save();
+      ctx.strokeStyle = getThemeTokens().axis;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, chartArea.top);
+      ctx.lineTo(x, chartArea.bottom);
+      ctx.stroke();
+      ctx.restore();
+    },
+  };
+
+  let trendChart = null;
+
+  function createTrendChart() {
+    const tokens = getThemeTokens();
+    const ctx = document.getElementById('trend-chart').getContext('2d');
+    trendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Worked',
+            data: [],
+            borderColor: tokens.series,
+            backgroundColor: tokens.seriesWash,
+            fill: 'origin',
+            borderWidth: 2,
+            tension: 0,
+            borderJoinStyle: 'round',
+            borderCapStyle: 'round',
+            pointRadius: 4,
+            pointHoverRadius: 5,
+            pointBackgroundColor: tokens.series,
+            pointBorderColor: tokens.surface,
+            pointBorderWidth: 2,
+          },
+          {
+            label: 'Target',
+            data: [],
+            borderColor: tokens.targetLine,
+            borderDash: [6, 4],
+            borderWidth: 1.5,
+            fill: false,
+            tension: 0,
+            pointRadius: 3,
+            pointHoverRadius: 4,
+            pointBackgroundColor: tokens.targetLine,
+            pointBorderColor: tokens.surface,
+            pointBorderWidth: 1.5,
+          },
+        ],
+      },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: {
+            grid: { display: false },
+            border: { color: tokens.axis },
+            ticks: {
+              color: tokens.textMuted,
+              autoSkip: true,
+              maxRotation: 0,
+              font: { size: 11 },
+              callback(value) {
+                const label = this.getLabelForValue(value);
+                return trendUnit === 'month' ? monthShort(label) : weekShort(label);
+              },
+            },
+          },
+          y: {
+            beginAtZero: true,
+            grid: { color: tokens.grid, lineWidth: 1 },
+            border: { display: false },
+            ticks: {
+              color: tokens.textMuted,
+              font: { size: 11 },
+              callback: (v) => `${v}h`,
+            },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            displayColors: false,
+            backgroundColor: tokens.tooltipBg,
+            titleColor: tokens.tooltipText,
+            bodyColor: tokens.tooltipText,
+            padding: 10,
+            titleFont: { weight: 'bold' },
+            filter: (item) => item.datasetIndex === 0,
+            callbacks: {
+              title(items) {
+                const bucket = trendBuckets[items[0].dataIndex];
+                return bucket ? trendTitle(bucket, trendUnit) : '';
+              },
+              label(item) {
+                const bucket = trendBuckets[item.dataIndex];
+                if (!bucket) return '';
+                return [
+                  `Worked ${fmtDuration(bucket.worked_s)}`,
+                  `Target ${fmtDuration(bucket.target_s)}`,
+                  `Balance ${fmtBalance(bucket.balance_s)}`,
+                  `Cumulative ${fmtBalance(bucket.cumulative_balance_s)}`,
+                ];
+              },
+            },
+          },
+        },
+      },
+      plugins: [crosshairPlugin],
+    });
+  }
+
+  // Re-applies current theme tokens to the existing chart instance without
+  // destroying/recreating it (keeps the canvas flicker-free).
+  function applyTrendChartTheme() {
+    if (!trendChart) return;
+    const tokens = getThemeTokens();
+    const [worked, target] = trendChart.data.datasets;
+    worked.borderColor = tokens.series;
+    worked.backgroundColor = tokens.seriesWash;
+    worked.pointBackgroundColor = tokens.series;
+    worked.pointBorderColor = tokens.surface;
+    target.borderColor = tokens.targetLine;
+    target.pointBackgroundColor = tokens.targetLine;
+    target.pointBorderColor = tokens.surface;
+
+    const { scales, plugins } = trendChart.options;
+    scales.x.border.color = tokens.axis;
+    scales.x.ticks.color = tokens.textMuted;
+    scales.y.grid.color = tokens.grid;
+    scales.y.ticks.color = tokens.textMuted;
+    plugins.tooltip.backgroundColor = tokens.tooltipBg;
+    plugins.tooltip.titleColor = tokens.tooltipText;
+    plugins.tooltip.bodyColor = tokens.tooltipText;
+  }
+
+  function renderTrend(data) {
+    trendBuckets = data.trend;
+    trendUnit = data.range.unit;
+    syncUnitToggleButtons();
+
+    document.getElementById('trend-subtitle').textContent =
+      `${fmtDate(data.range.start)} – ${fmtDate(data.range.end)}`;
+
+    trendChart.data.labels = data.trend.map((b) => b.label);
+    trendChart.data.datasets[0].data = data.trend.map((b) => b.worked_s / 3600);
+    trendChart.data.datasets[1].data = data.trend.map((b) => b.target_s / 3600);
+    applyTrendChartTheme();
+    trendChart.update('none');
+  }
+
+  // ------------------------------------------------------------------
+  // (10) Recent sessions table
+  // ------------------------------------------------------------------
+
+  function renderSessions(data) {
+    const tbody = document.getElementById('sessions-body');
+    tbody.textContent = '';
+    const entries = data.entries;
+
+    if (!entries.length) {
+      const tr = document.createElement('tr');
+      tr.className = 'sessions-empty';
+      const td = document.createElement('td');
+      td.colSpan = 4;
+      td.appendChild(document.createTextNode('No sessions yet. Start one with '));
+      const code = document.createElement('code');
+      code.textContent = 'worktime start';
+      td.appendChild(code);
+      td.appendChild(document.createTextNode('.'));
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    entries.forEach((entry) => {
+      const tr = document.createElement('tr');
+      if (entry.running) tr.className = 'row-running';
+
+      const dateTd = document.createElement('td');
+      dateTd.textContent = fmtDateLong(entry.date);
+      tr.appendChild(dateTd);
+
+      const startTd = document.createElement('td');
+      startTd.textContent = fmtHHMM(entry.start);
+      tr.appendChild(startTd);
+
+      const endTd = document.createElement('td');
+      if (entry.running) {
+        const badge = document.createElement('span');
+        badge.className = 'badge-running';
+        const dot = document.createElement('span');
+        dot.className = 'badge-dot';
+        badge.appendChild(dot);
+        badge.appendChild(document.createTextNode('Running'));
+        endTd.appendChild(badge);
+      } else {
+        endTd.appendChild(document.createTextNode(fmtHHMM(entry.end)));
+        if (entry.end < entry.start) {
+          const nextDay = document.createElement('span');
+          nextDay.className = 'next-day';
+          nextDay.textContent = ' (+1)';
+          endTd.appendChild(nextDay);
+        }
+      }
+      tr.appendChild(endTd);
+
+      const durTd = document.createElement('td');
+      durTd.className = 'num';
+      durTd.textContent = fmtDuration(entry.duration_s);
+      tr.appendChild(durTd);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // (11) Refresh loop + init
   // ------------------------------------------------------------------
 
   let lastData = null;
@@ -575,6 +915,8 @@
     renderRangeSummary(data);
     renderChartHeader(data);
     updateDailyChart(data);
+    renderTrend(data);
+    renderSessions(data);
   }
 
   async function loadAndRender() {
@@ -608,12 +950,16 @@
 
   function init() {
     setupRangeControls();
+    setupUnitToggle();
     createDailyChart();
+    createTrendChart();
 
     const darkMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     darkMediaQuery.addEventListener('change', () => {
       applyChartTheme();
       if (dailyChart) dailyChart.update('none');
+      applyTrendChartTheme();
+      if (trendChart) trendChart.update('none');
     });
 
     loadAndRender();
