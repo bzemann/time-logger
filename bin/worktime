@@ -4,6 +4,17 @@
 # system Python 3.9 (no tomllib). We resolve our own location, then pick
 # the first available Python interpreter that is actually >= 3.11.
 
+notify_fail() {  # $1 title, $2 message; best effort, never fails the script
+    case "$(printf '%s' "${WORKTIME_NO_NOTIFY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        1|true|yes) return 0 ;;
+    esac
+    if command -v osascript >/dev/null 2>&1; then
+        osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' -e 'end run' "$1" "$2" >/dev/null 2>&1 || true
+    elif command -v notify-send >/dev/null 2>&1; then
+        notify-send -a WorkTime "$1" "$2" >/dev/null 2>&1 || true
+    fi
+}
+
 # Resolve the real path of this script, following symlinks, without
 # relying on `readlink -f` (not available on all systems, e.g. macOS).
 f="$0"
@@ -47,6 +58,7 @@ fi
 
 if [ -z "$py" ]; then
     echo "worktime: no Python >= 3.11 found (set WORKTIME_PYTHON to override)" >&2
+    notify_fail "WorkTime error" "No Python >= 3.11 found. Install Python 3.11+ or set WORKTIME_PYTHON."
     exit 1
 fi
 

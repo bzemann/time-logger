@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -623,6 +624,234 @@ class ReportCommandTests(unittest.TestCase):
                 self.assertEqual(html_files, [])
             finally:
                 run(["stop"], env=env)
+
+
+class CatchAllErrorTests(unittest.TestCase):
+    """In-process tests for the unexpected-exception catch-all in cli.main."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        tmp_path = Path(self._tmpdir.name)
+        self.home = tmp_path / "home"
+        self.home.mkdir()
+        self.data_dir = tmp_path / "data"
+        self.data_file = self.data_dir / "worktime.csv"
+        self.cfg_path = tmp_path / "config.toml"
+        self.cfg_path.write_text(f'data_file = "{self.data_file}"\n', encoding="utf-8")
+        self.env = {
+            "WORKTIME_CONFIG": str(self.cfg_path),
+            "WORKTIME_NO_AUTO_REPORTS": "1",
+            "HOME": str(self.home),
+        }
+
+    def test_start_unexpected_error_notifies_and_logs(self):
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch("worktime.session.start", side_effect=RuntimeError("boom")):
+            rc = cli.main(["start"])
+
+        self.assertEqual(rc, 1)
+        notify_mock.assert_called_once()
+        title, body = notify_mock.call_args.args
+        self.assertEqual(title, "WorkTime error")
+        self.assertIn("RuntimeError: boom", body)
+        self.assertIn("error.log", body)
+
+        log_path = self.data_dir / "error.log"
+        self.assertTrue(log_path.exists())
+        content = log_path.read_text(encoding="utf-8")
+        self.assertIn("=== ", content)
+        self.assertIn("worktime start", content)
+        self.assertIn("Traceback", content)
+        self.assertIn("RuntimeError: boom", content)
+
+    def test_dashboard_unexpected_error_notifies(self):
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch("worktime.control.probe", side_effect=RuntimeError("boom")):
+            rc = cli.main(["dashboard"])
+
+        self.assertEqual(rc, 1)
+        notify_mock.assert_called_once()
+
+    def test_non_shortcut_command_reraises_and_does_not_notify(self):
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch("worktime.session.status", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                cli.main(["status"])
+
+        notify_mock.assert_not_called()
+
+    def test_expected_store_error_unchanged(self):
+        from worktime.store import StoreError
+
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch(
+            "worktime.session.start", side_effect=StoreError("bad csv")
+        ):
+            rc = cli.main(["start"])
+
+        self.assertEqual(rc, 1)
+        notify_mock.assert_called_once_with("WorkTime error", "bad csv")
+        log_path = self.data_dir / "error.log"
+        self.assertFalse(log_path.exists())
+
+    def test_broken_config_falls_back_to_default_log_dir(self):
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch(
+            "worktime.cli.load_config", side_effect=RuntimeError("cfg boom")
+        ):
+            rc = cli.main(["start"])
+
+        self.assertEqual(rc, 1)
+        log_path = self.home / ".local" / "share" / "worktime" / "error.log"
+        self.assertTrue(log_path.exists())
+        self.assertIn("cfg boom", log_path.read_text(encoding="utf-8"))
+
+    def test_long_message_is_truncated(self):
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch(
+            "worktime.session.start", side_effect=RuntimeError("x" * 500)
+        ):
+            rc = cli.main(["start"])
+
+        self.assertEqual(rc, 1)
+        notify_mock.assert_called_once()
+        _, body = notify_mock.call_args.args
+        self.assertRegex(body, r"RuntimeError: x+\.\.\.")
+        self.assertNotIn("x" * 190, body)
+        detail = body.split("Unexpected problem (", 1)[1].split(")", 1)[0]
+        self.assertLessEqual(len(detail), 200)
+
+    def test_unwritable_log_falls_back_to_message(self):
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ), mock.patch(
+            "worktime.session.start", side_effect=RuntimeError("boom")
+        ), mock.patch("worktime.cli._write_error_log", return_value=None):
+            rc = cli.main(["start"])
+
+        self.assertEqual(rc, 1)
+        notify_mock.assert_called_once()
+        _, body = notify_mock.call_args.args
+        self.assertIn("Could not write error.log", body)
+
+    def test_readonly_data_folder_falls_back_to_default_log_dir(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores directory permissions")
+
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.chmod(0o555)
+        self.addCleanup(self.data_dir.chmod, 0o755)
+
+        notify_mock = mock.Mock()
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch(
+            "worktime.cli.notify", notify_mock
+        ):
+            # No mocking here: the read-only data folder makes the real
+            # session.start -> store.locked() lock-file creation raise a
+            # genuine PermissionError, which is what the catch-all (and
+            # this test) is meant to survive.
+            rc = cli.main(["start"])
+
+        self.assertEqual(rc, 1)
+        log_path = self.home / ".local" / "share" / "worktime" / "error.log"
+        self.assertTrue(log_path.exists())
+        self.assertIn("PermissionError", log_path.read_text(encoding="utf-8"))
+        notify_mock.assert_called_once()
+        _, body = notify_mock.call_args.args
+        self.assertIn(str(log_path), body)
+
+
+@unittest.skipIf(sys.platform == "win32", "POSIX sh wrapper")
+class WrapperNoPythonFallbackTests(unittest.TestCase):
+    """Subprocess tests for bin/worktime's no-Python-found notification."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        tmp_path = Path(self._tmpdir.name)
+
+        # A copy of bin/worktime with the absolute fallback candidates
+        # replaced by a nonexistent path, so no Python is ever found.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        self.wrapper = bin_dir / "worktime"
+        original = WORKTIME_BIN.read_text(encoding="utf-8")
+        target_line = (
+            "    for cand in /opt/homebrew/bin/python3 /usr/local/bin/python3 "
+            "/usr/bin/python3; do\n"
+        )
+        self.assertIn(target_line, original, "fallback candidates line not found")
+        patched = original.replace(
+            target_line, "    for cand in /nonexistent/python3; do\n"
+        )
+        self.wrapper.write_text(patched, encoding="utf-8")
+        self.wrapper.chmod(0o755)
+
+        # A minimal PATH with only the tools the wrapper itself needs, plus
+        # a fake osascript that records what it was called with, and no
+        # python3 at all.
+        fakebin = tmp_path / "fakebin"
+        fakebin.mkdir()
+        for tool in ("dirname", "readlink", "tr"):
+            real = shutil.which(tool)
+            self.assertIsNotNone(real, f"{tool} not found on PATH")
+            (fakebin / tool).symlink_to(real)
+
+        self.notified_file = tmp_path / "notified.txt"
+        osascript = fakebin / "osascript"
+        osascript.write_text(
+            "#!/bin/sh\n"
+            f'for a in "$@"; do printf \'%s\\n\' "$a" >> "{self.notified_file}"; done\n',
+            encoding="utf-8",
+        )
+        osascript.chmod(0o755)
+
+        self.home = tmp_path / "home"
+        self.home.mkdir()
+        self.env = {"PATH": str(fakebin), "HOME": str(self.home)}
+
+    def test_no_python_found_sends_notification(self):
+        result = subprocess.run(
+            [str(self.wrapper), "--version"],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no Python >= 3.11 found", result.stderr)
+        self.assertTrue(self.notified_file.exists())
+        content = self.notified_file.read_text(encoding="utf-8")
+        self.assertIn("WorkTime error", content)
+        self.assertIn("No Python >= 3.11 found", content)
+
+    def test_no_python_found_respects_no_notify(self):
+        env = dict(self.env)
+        env["WORKTIME_NO_NOTIFY"] = "1"
+
+        result = subprocess.run(
+            [str(self.wrapper), "--version"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(self.notified_file.exists())
 
 
 if __name__ == "__main__":

@@ -139,7 +139,27 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
 - **Automatic reports (catch-up):** after `start` and `dashboard`, `cli._maybe_start_catch_up` calls `due_reports`. If anything is due, it spawns a detached `python -m worktime report catch-up` (stderr goes to `report.log` next to the CSV), so the shortcut stays instant.
   - It never breaks `start` or `dashboard`, and `WORKTIME_NO_AUTO_REPORTS=1` disables it (the tests use this).
   - `report catch-up` writes the due reports, sends one notification each and never opens a browser. Final reports are never overwritten automatically.
-- **`platform/macos/`, `platform/linux/`:** Thin launcher layer: keybinding snippets (Aerospace / i3), Spotlight `.app` bundles in `~/Applications` / rofi `.desktop` entries, and install scripts that **print** snippets rather than editing WM configs.
+- **`platform/macos/`** (done, task 8): `install.sh [--uninstall|--help]` (POSIX sh), `aerospace-bindings.toml` (template with `@WORKTIME@`), `README.md`.
+  - Creates 5 Spotlight launchers in `~/Applications`: "WorkTime Start / Stop / Dashboard / Weekly Report / Monthly Report".
+    - Each is a minimal `.app`: `Info.plist` with `CFBundleIdentifier local.worktime.<id>`, `LSUIElement` (no Dock icon) and `CFBundleInfoDictionaryVersion 6.0`, plus `Contents/MacOS/worktime-launcher`, a 2-line sh script that execs the absolute path to `bin/worktime`.
+  - **The apps are ad-hoc code signed** (`codesign --force --sign -`). Unsigned bundles made macOS 27 Spotlight fail intermittently with "SystemIntents does not have permission to open (null)".
+  - It also symlinks `~/.local/bin/worktime` and **prints** the Aerospace lines, with a conflict / "already configured" check. It never edits the Aerospace config itself.
+  - It never overwrites foreign apps or a real file at the symlink path. Uninstall removes only its own files. It is idempotent.
+  - `WORKTIME_INSTALL_NO_REGISTER=1` skips `lsregister`/`mdimport` (used by the tests).
+  - Re-run it after moving the repo (the launchers contain the absolute path).
+  - Keys:
+    - `alt-shift-t`: start, or show the running time
+    - `alt-shift-x`: stop
+    - `alt-shift-d`: dashboard
+    - `alt-shift-r`: weekly report (this week so far)
+    - The monthly report is only via Spotlight or the CLI.
+  - On Basil's Mac: installed. The 4 lines were added to `~/.config/aerospace/aerospace.toml` after the `alt-shift-a` line (backup `aerospace.toml.bak`).
+- **`platform/linux/`** (task 9): i3 keybinding snippet, rofi `.desktop` entries and an install script that **prints** the i3 snippet rather than editing the WM config.
+- **Unexpected errors:**
+  - In `cli.main`, any other `Exception` from a shortcut command (`notify_errors=True`) writes its traceback to `error.log`, then sends a "WorkTime error: Unexpected problem (…). Details in <path>" notification and exits 1.
+    - It tries the data folder first, then `~/.local/share/worktime/`. The detail text is capped at 200 characters.
+  - Terminal commands (`status`, `config`, `serve`, …) re-raise, so their traceback stays visible.
+  - `bin/worktime` itself notifies (via `osascript` or `notify-send`, respecting `WORKTIME_NO_NOTIFY`) when no Python ≥ 3.11 is found.
 - **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. `report week|month [--last | --date YYYY-MM-DD] [--no-open]` (default: the current period so far; always overwrites; notifies and opens the browser), `report catch-up`.
   - Errors: `ConfigError`, `StoreError`, `SessionError` and `ControlError` print `worktime: …` to stderr and exit 1. For `start`, `stop`, `dashboard` and `report` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
 
@@ -155,10 +175,10 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–7 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool, HTML reports with automatic catch-up). 296 unit tests pass. Basil visually confirmed the notification, the browser opening, both dashboard parts (including dark mode) and the weekly and monthly reports (including print preview).
-- Open: roadmap items 8–10.
+- Implemented: tasks 1–8 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool, HTML reports with automatic catch-up, the macOS launcher layer, the unexpected-error catch-all). 321 unit tests pass. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
+- Basil's real CSV was reset to header-only on 2026-09-23 (test sessions removed; backup in the session scratchpad only). Real tracking starts from there.
+- Open: roadmap items 9–10.
 - Test-writing note for executors: never put "wait for another executor's file" loops or skips into test files. Waiting belongs only in the executor's own work session.
-- To do in task 8/9: unexpected exceptions (e.g. an unwritable data folder) currently produce only a traceback and no notification. Add a catch-all error notification for shortcut-triggered commands.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
 - Notes: the reference dashboard screenshot is `example-dashboard.jpeg` (repo root). Design notes from it for tasks 5–6:
   - Light theme with white rounded cards; the original UI labels are German.
@@ -178,7 +198,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 5. ✅ **Dashboard part 1** (done 2026-09-23; reference: `example-dashboard.jpeg`): layout, header/status/timestamp, summary cards with daily balance, range filter, daily bar chart with target line.
 6. ✅ **Dashboard part 2** (done 2026-09-23): weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. ✅ **Reports** (done 2026-09-23): `report week|month [--last|--date] [--no-open]` as self-contained HTML with stats, SVG charts (daily bars, cumulative worked vs. target) and a daily table in `reports/`. Automatic catch-up for the last complete week and month on `start` / `dashboard`. HTML only, no PDF.
-8. **macOS launcher layer:** Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
+8. ✅ **macOS launcher layer** (done 2026-09-23): Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
 9. **Linux launcher layer:** i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
 10. **README and end-to-end check:** `README.md` describing installation, configuration and daily usage on **both macOS and Linux Debian** (shortcuts, dashboard, reports, CSV format, troubleshooting), plus an end-to-end check on both OSes.
 
@@ -186,6 +206,8 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 - Requirements: Python 3.11+ (macOS: Homebrew `python3`; Debian 12+: system `python3`). Linux notifications: `notify-send` (`libnotify-bin`) + a notification daemon (e.g. dunst).
 - Reports: `bin/worktime report week` (this week so far), `bin/worktime report month --last`, `bin/worktime report week --date 2026-09-23`. They are created automatically after `start` / `dashboard` (disable with `WORKTIME_NO_AUTO_REPORTS=1`).
+- macOS setup: `platform/macos/install.sh`, then paste the printed Aerospace lines and reload (`alt-shift-c`). Remove it with `platform/macos/install.sh --uninstall`.
+- Logs (next to the CSV): `error.log` (unexpected errors from shortcuts), `report.log` (background report catch-up), `server.log` (dashboard server).
 - Show effective config: `bin/worktime config` (`bin/worktime --version`)
 - Track time: `bin/worktime start [--at HH:MM]`, `bin/worktime stop [--at HH:MM]`, `bin/worktime status`
 - Quiet mode for development: `WORKTIME_NO_NOTIFY=1 bin/worktime …`
@@ -205,3 +227,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 5: dashboard part 1 (English UI): header with live status, balance cards, remembered range filter with summary, "Hours per day" bar chart with a target line and tooltips, dark mode, 60 s refresh, error banner. Chart.js 4.4.1 vendored. `tools/make_demo_data.py`. Static-asset, offline and no-`innerHTML` tests. 261 tests.
 - 2026-09-23: Task 6: dashboard part 2: "Actual vs. target" trend chart (area plus dashed target line, Weekly/Monthly toggle remembered, crosshair, tooltip with balance and cumulative) and the "Recent sessions (latest 50)" table (running badge, next-day marker). The dashboard is complete.
 - 2026-09-23: Task 7: `worktime/report.py` (self-contained HTML reports with SVG charts, tiles and a daily table, A4 print stylesheet, final/in-progress marker), CLI `report week|month|catch-up`, automatic background catch-up after `start`/`dashboard`. 296 tests.
+- 2026-09-23: Task 8: macOS launcher layer (`platform/macos/install.sh`: 5 ad-hoc signed Spotlight launchers, a `~/.local/bin` symlink, printed Aerospace bindings alt-shift-t/x/d/r), a catch-all notification plus `error.log` for unexpected errors in shortcut commands, and a `bin/worktime` notification when no Python is found. Installed and verified on Basil's Mac. Real CSV reset. 321 tests.

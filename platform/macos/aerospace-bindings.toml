@@ -1,0 +1,13 @@
+# WorkTime Logger — Aerospace keybindings.
+# platform/macos/install.sh prints these lines with the real path filled in.
+# Paste them under [mode.main.binding] in ~/.config/aerospace/aerospace.toml
+# (or ~/.aerospace.toml), then reload the config (alt-shift-c).
+
+# start / show running time
+alt-shift-t = 'exec-and-forget "@WORKTIME@" start'
+# stop
+alt-shift-x = 'exec-and-forget "@WORKTIME@" stop'
+# open dashboard
+alt-shift-d = 'exec-and-forget "@WORKTIME@" dashboard'
+# weekly report
+alt-shift-r = 'exec-and-forget "@WORKTIME@" report week'

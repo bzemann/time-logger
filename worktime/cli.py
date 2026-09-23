@@ -7,7 +7,9 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date
+import traceback
+from datetime import date, datetime
+from pathlib import Path
 
 from worktime import __version__, browser, control, session
 from worktime.config import ConfigError, load_config, config_path
@@ -324,6 +326,52 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_error_log(args: argparse.Namespace) -> Path | None:
+    """Append the current exception's traceback to error.log, or None on failure.
+
+    Must be called from inside an `except` block so `traceback.format_exc()`
+    has something to format. Shortcut-triggered commands have no visible
+    terminal, so this is the only place a traceback survives for debugging.
+
+    Tries candidate log directories in order (the configured data folder,
+    then the default data folder) and returns the first one that is
+    writable, since an unwritable data folder -- e.g. a read-only disk or
+    permissions issue -- is exactly the kind of unexpected problem this
+    catch-all exists for; giving up after a single candidate would silently
+    lose the traceback in that case.
+    """
+    block = (
+        f"=== {datetime.now():%Y-%m-%d %H:%M:%S} worktime {args.command} ===\n"
+        f"{traceback.format_exc()}\n"
+    )
+
+    candidates: list[Path] = []
+    try:
+        candidates.append(load_config().data_file.parent)
+    except Exception:
+        pass
+
+    fallback = Path(os.path.expanduser("~/.local/share/worktime"))
+    try:
+        is_duplicate = any(c.resolve() == fallback.resolve() for c in candidates)
+    except OSError:
+        is_duplicate = any(c == fallback for c in candidates)
+    if not is_duplicate:
+        candidates.append(fallback)
+
+    for log_dir in candidates:
+        path = log_dir / "error.log"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(block)
+        except OSError:
+            continue
+        return path
+
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -338,4 +386,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"worktime: {e}", file=sys.stderr)
         if getattr(args, "notify_errors", False):
             notify("WorkTime error", str(e))
+        return 1
+    except Exception as e:
+        # Anything not covered above (e.g. an unwritable data folder, a bug)
+        # would otherwise only produce a traceback -- invisible when the
+        # command was triggered from a shortcut, not a terminal. Terminal
+        # commands (status, config, serve, ...) keep the normal traceback.
+        if not getattr(args, "notify_errors", False):
+            raise
+        log = _write_error_log(args)
+        detail = f"{type(e).__name__}: {e}"
+        if len(detail) > 200:
+            detail = detail[:197] + "..."
+        where = f"Details in {log}" if log else "Could not write error.log"
+        print(f"worktime: unexpected error: {detail}. {where}", file=sys.stderr)
+        notify("WorkTime error", f"Unexpected problem ({detail}). {where}")
         return 1
