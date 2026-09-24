@@ -115,6 +115,25 @@ class InstallScriptTests(unittest.TestCase):
         for line in expected:
             self.assertIn(line, result.stdout)
         self.assertIn("Script Editor", result.stdout)
+        self.assertIn(
+            f"──── paste into {self.home}/.config/aerospace/aerospace.toml (under [mode.main.binding]) ────",
+            result.stdout,
+        )
+        self.assertIn("──── end ────", result.stdout)
+
+    def test_aerospace_frame_names_dot_file_when_that_is_the_existing_config(self):
+        (self.home / ".aerospace.toml").write_text(
+            "[mode.main.binding]\n", encoding="utf-8"
+        )
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"──── paste into {self.home}/.aerospace.toml (under [mode.main.binding]) ────",
+            result.stdout,
+        )
+        self.assertNotIn(
+            f"──── paste into {self.home}/.config/aerospace/aerospace.toml", result.stdout
+        )
 
     def test_path_hint_shown_when_not_on_path(self):
         result = run_install([], self.home, extra_env={"PATH": "/usr/bin:/bin"})
@@ -247,6 +266,54 @@ class InstallScriptTests(unittest.TestCase):
         )
         self.assertEqual(stop_result.returncode, 0, stop_result.stderr)
         self.assertIn("Stopped:", stop_result.stdout)
+
+
+def _extract_frames(text):
+    """Return a list of (header_line, [content_lines]) for each
+    "──── ... ────" / "──── end ────" block in install.sh's output."""
+    lines = text.splitlines()
+    frames = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("──── ") and line.endswith(" ────") and line != "──── end ────":
+            header = line
+            content = []
+            i += 1
+            while i < len(lines) and lines[i] != "──── end ────":
+                content.append(lines[i])
+                i += 1
+            frames.append((header, content))
+        i += 1
+    return frames
+
+
+@unittest.skipUnless(sys.platform == "darwin", "macOS only")
+class FrameFormatTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+
+    def test_frames_are_well_formed(self):
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = _extract_frames(result.stdout)
+        self.assertTrue(frames, "no frames found in install output")
+        for header, content in frames:
+            self.assertTrue(content, f"empty frame: {header}")
+            for line in content:
+                for prefix in ("polybar:", "i3:", "Aerospace:", "Warning:"):
+                    self.assertFalse(
+                        line.startswith(prefix),
+                        f"instruction line inside frame: {line!r}",
+                    )
+                self.assertNotIn("e.g.", line, f"'e.g.' found inside frame: {line!r}")
+        # The number of frame starts equals the number of "──── end ────" lines.
+        self.assertEqual(
+            result.stdout.count("──── end ────"),
+            len(frames),
+        )
 
 
 class InstallScriptSyntaxTests(unittest.TestCase):

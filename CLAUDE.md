@@ -43,15 +43,17 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - A missing tool, a failure or an unknown OS falls back to stderr. `WORKTIME_NO_NOTIFY=1` disables notifications (the tests use this).
 - **`worktime/config.py`:** TOML config, loaded into a frozen `Config(data_file, reports_dir, daily_target_min, workdays, port)`. Invalid values raise `ConfigError`.
   - Location: `$WORKTIME_CONFIG`, else `$XDG_CONFIG_HOME/worktime/config.toml`, else `~/.config/worktime/config.toml`. A missing file means defaults. See `config.example.toml`.
-  - Keys: `data_file`, `reports_dir`, `daily_target` (`"H:MM"` or number of hours, **default 8:30**), `workdays` (default mon–fri; stored as 0=Mon), `days_off` (list of `"YYYY-MM-DD"` or inclusive `"YYYY-MM-DD..YYYY-MM-DD"` ranges up to 366 days; stored as `frozenset[date]`; default empty), `port` (default 8765). Unknown keys are an error.
+  - Keys: `data_file`, `reports_dir`, `daily_target` (`"H:MM"` or number of hours, **default 8:30**), `workdays` (default mon–fri; stored as 0=Mon), `days_off` (list of `"YYYY-MM-DD"` or inclusive `"YYYY-MM-DD..YYYY-MM-DD"` ranges up to 366 days; stored as `frozenset[date]`; default empty), `port` (default 8765), `target_overrides` (TOML table after all top-level keys: date or range → `"H:MM"`/hours; stored as `Config.target_overrides: dict[date, int]` in minutes; default `{}`). Unknown keys are an error.
+  - `target_overrides` rules: a date defined twice is an error, and a date in both `days_off` and `target_overrides` is an error (Basil's decision: no silent precedence).
   - Default data path on both OSes: `~/.local/share/worktime/worktime.csv`. Reports go to `reports/` next to it.
 - **`worktime/stats.py`:** All aggregation. Pure functions with no I/O. The API (task 4) and the reports (task 7) both use it, so their numbers are consistent.
   - Rules:
-    - The target per day is `daily_target` on workdays that aren't in `days_off`, else 0.
+    - The target per day is the `target_overrides` value if the date has one (weekends included; `"0:00"` acts like a day off). Otherwise it's `daily_target` on workdays not in `days_off`, else 0. `Target(daily, workdays, days_off, overrides)`; `from_config` uses `getattr(cfg, "target_overrides", {})`.
     - Worked time per day is the sum of `elapsed(now)` for sessions *starting* that day (a running session counts with its time so far).
     - The target of a period covers only days in `[max(start, first entry date), min(end, today)]`. Today counts with its full target; days before tracking started or in the future count 0.
     - Balance = worked − target.
     - Everything is exact-second `timedelta`; rounding happens at display time only.
+    - The dashboard's dashed target line stays at `daily_target`; the per-day tooltip and the reports show overridden targets.
     - This reproduces the screenshot: a week with 28h 52m worked at a 8:24 target over 3 days gives +3:40.
   - API:
     - `Target(daily, workdays, days_off)` with `.for_day(d)` and `.from_config(cfg)`.
@@ -84,7 +86,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - `probe(port)` returns "ours", "free" or "other", based on `/api/health`.
   - `start_background(cfg)` spawns `python -m worktime serve` detached (`start_new_session`, output to `server.log`) and waits up to 5 s for it to answer.
   - `stop_background(cfg)` reads the PID file, checks the server is ours, sends SIGTERM and waits. It also cleans up stale or invalid PID files.
-  - **After code updates, run `worktime stop-server` once**, because a running server keeps serving the old code.
+  - `server_version(port)` reads the version from `/api/health`. `ensure_current(cfg)` returns "started", "running" or "restarted": if our server runs a different version (or none), it stops it and starts a fresh one. `worktime dashboard` uses this, so after an update the server replaces itself (it prints "Restarted the dashboard server (new version)."). `stop-server` is no longer required after updates. This depends on bumping `__version__` for every release.
 - **`worktime/browser.py`:** `open_url(url)` uses `open` on macOS and `xdg-open` on Linux, falling back to `webbrowser`. It never raises. `WORKTIME_NO_BROWSER=1` disables it (the tests use this).
 - **`web/`:** The static dashboard (reference: `docs/reference-dashboard.jpeg`, minus all project elements). It fetches `/api/dashboard`.
   - Files:
@@ -175,6 +177,9 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
     - It tries the data folder first, then `~/.local/share/worktime/`. The detail text is capped at 200 characters.
   - Terminal commands (`status`, `config`, `serve`, …) re-raise, so their traceback stays visible.
   - `bin/worktime` itself notifies (via `osascript` or `notify-send`, respecting `WORKTIME_NO_NOTIFY`) when no Python ≥ 3.11 is found.
+- **Versioning and releases:** `worktime/__init__.py` holds `__version__` (currently **0.2.0**). `CHANGELOG.md` has user-facing notes per version, newest first, each with a **"What you need to do"** section.
+  - **For every release:** bump `__version__`, add a CHANGELOG entry (`tests/test_readme.py` checks that the current version has a heading), and keep README "Updating" accurate.
+- **Installer output:** both install scripts print everything meant to be pasted between `──── paste into <file> ────` / `──── replace this line in <file> ────` and `──── end ────`. Instructions and warnings are never inside a frame (tests enforce this). The Linux polybar section checks the module and `modules-right` independently, and prints the restart hint only if something was printed to paste.
 - **Documentation and tests:**
   - `README.md` is the user-facing manual: installation for both OSes, daily use, command reference, dashboard, reports, configuration and environment variables, balance rules, data format, troubleshooting, updating, development.
   - `tests/test_readme.py` fails if any CLI subcommand or option, `WORKTIME_*` variable (in `worktime/`, `bin/`, `platform/`, `tools/`) or config key is undocumented, if the README mentions a non-existent variable, or if its CSV example rows are inconsistent. **When adding a command, option, env var or config key, update `README.md` too.**
@@ -195,7 +200,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: everything in the roadmap (tasks 1–10) plus the Debian follow-up (2026-09-24). 378 unit tests pass. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
+- Implemented: everything in the roadmap (tasks 1–10), the Debian follow-up, and 0.2.0 (target overrides, dashboard auto-restart, framed installer output, CHANGELOG) on 2026-09-24. 439 unit tests pass. Version 0.2.0. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
 - Basil's real CSV was reset to header-only on 2026-09-23 (test sessions removed; backup in the session scratchpad only). Real tracking starts from there.
 - Linux layer: adapted to Basil's real Debian i3, rofi and polybar configs (2026-09-24) and tested on macOS in test mode, but **not yet verified on the Debian machine itself**. The repo isn't cloned there yet. Next step there: the README's Debian installation steps, then the checklist in `platform/linux/README.md`. Fix any findings in a follow-up `/task`.
 - Basil's Debian configs are in `new-conf-linux-debian/` (gitignored, reference only). Local-only copies used as test fixtures: `tests/fixtures/i3-config-debian` and `tests/fixtures/polybar-config.ini`. **They are gitignored and must never be committed** (personal configs, Basil's decision). The tests using them skip when they're absent, and inline sample-config tests cover the same behavior everywhere. `$mod+shift+x` is reserved for betterlockscreen and must never be used by WorkTime. `$mod+space` is his rofi app launcher and must stay untouched.
@@ -231,6 +236,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - macOS setup: `platform/macos/install.sh`, then paste the printed Aerospace lines and reload (`alt-shift-c`). Remove it with `platform/macos/install.sh --uninstall`.
 - Debian setup: see `platform/linux/README.md` (clone the private repo via `gh auth login` or an SSH key, then `platform/linux/install.sh`, paste the printed i3 lines and polybar module, reload i3 with `$mod+shift+c`, restart polybar).
 - Logs (next to the CSV): `error.log` (unexpected errors from shortcuts), `report.log` (background report catch-up), `server.log` (dashboard server).
+- Updating (both OSes): `git pull`, re-run the platform `install.sh`, and paste only what it prints inside frames. The dashboard server restarts itself on the next `worktime dashboard`. See the README section "Updating" and `CHANGELOG.md`.
 - Show effective config: `bin/worktime config` (`bin/worktime --version`)
 - Track time: `bin/worktime start [--at HH:MM]`, `bin/worktime stop [--at HH:MM]`, `bin/worktime status`
 - Quiet mode for development: `WORKTIME_NO_NOTIFY=1 bin/worktime …`
@@ -238,7 +244,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Quiet mode for tests: `WORKTIME_NO_NOTIFY=1 WORKTIME_NO_BROWSER=1`
 - Try with demo data: `python3 tools/make_demo_data.py /tmp/wt-demo/wt.csv`, then write `/tmp/wt-demo/c.toml` with `data_file = "/tmp/wt-demo/wt.csv"` and `port = 8799`, then run `WORKTIME_CONFIG=/tmp/wt-demo/c.toml bin/worktime dashboard`
 - JS syntax check (dev only, needs node): `node --check web/app.js`
-- Tests: `python3 -m unittest discover -s tests` (378 tests, about 20 s; macOS-only installer tests are skipped on Linux)
+- Tests: `python3 -m unittest discover -s tests` (439 tests, about 22 s; macOS-only installer tests are skipped on Linux)
 - User manual: `README.md`
 
 ## Changelog
@@ -255,3 +261,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 9: Linux launcher layer (`platform/linux/install.sh`: 5 rofi `.desktop` entries, a `~/.local/bin` symlink, apt hints, printed i3 bindings $mod+Shift+t/x/d/w with a conflict check; README with Debian setup and checklist). Tested on macOS in test mode; the Debian check is pending. 342 tests.
 - 2026-09-23: Task 10: main `README.md` (both OSes, all commands, config, data, troubleshooting), `tests/test_readme.py` (docs-in-sync guard), `tests/test_e2e.py` (full daily flow). Reference screenshot moved to `docs/`. Roadmap complete; the Debian check is pending. 354 tests.
 - 2026-09-24: Debian follow-up: i3 keys $mod+shift+t/u/d/w (stop moved off `x`, Basil's lock screen), case-insensitive i3 conflict check, rofi launcher-key hint and WorkTime icon, polybar module (`worktime status --short`, printed module plus `modules-right` hint), Basil's i3 and polybar configs as local-only (gitignored) test fixtures, `new-conf-linux-debian/` gitignored, numbered Debian install steps in the README. 378 tests.
+- 2026-09-24: Version 0.2.0: `target_overrides` config table (per-date targets such as half days; a conflict with `days_off` is an error), `worktime config` shows overrides, `worktime dashboard` auto-restarts an outdated server (version check via `/api/health`), framed paste blocks in both installers (the polybar module and `modules-right` are checked independently), `CHANGELOG.md`, README Updating guide per OS. 439 tests.

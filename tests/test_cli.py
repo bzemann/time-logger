@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.server
+import io
 import json
 import os
 import shutil
@@ -20,7 +22,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from worktime import cli, control
+from worktime import __version__, cli, control
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKTIME_BIN = REPO_ROOT / "bin" / "worktime"
@@ -49,7 +51,7 @@ class VersionTests(unittest.TestCase):
     def test_version(self):
         result = run(["--version"])
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "worktime 0.1.0")
+        self.assertEqual(result.stdout.strip(), f"worktime {__version__}")
 
 
 class ConfigCommandTests(unittest.TestCase):
@@ -129,6 +131,53 @@ class ConfigCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("days off:     1 day (2027-01-02)", result.stdout)
 
+    def test_config_with_no_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text("", encoding="utf-8")
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+
+            result = run(["config"], cwd=str(tmp_path), env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("overrides:    (none)", result.stdout)
+
+    def test_config_with_single_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text(
+                '[target_overrides]\n"2026-09-24" = "4:15"\n',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+
+            result = run(["config"], cwd=str(tmp_path), env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("overrides:    1 day (2026-09-24 = 4:15)", result.stdout)
+
+    def test_config_with_multiple_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text(
+                '[target_overrides]\n'
+                '"2026-09-24" = "4:15"\n'
+                '"2026-09-30..2026-10-02" = "0:00"\n',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+
+            result = run(["config"], cwd=str(tmp_path), env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("overrides:    4 days (2026-09-24 … 2026-10-02)", result.stdout)
+
 
 class NoCommandTests(unittest.TestCase):
     def test_no_command_exits_2(self):
@@ -145,7 +194,7 @@ class SymlinkInvocationTests(unittest.TestCase):
                 [str(link), "--version"], capture_output=True, text=True
             )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "worktime 0.1.0")
+        self.assertEqual(result.stdout.strip(), f"worktime {__version__}")
 
 
 class MinimalPathTests(unittest.TestCase):
@@ -164,7 +213,7 @@ class MinimalPathTests(unittest.TestCase):
                 env=env,
             )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "worktime 0.1.0")
+        self.assertEqual(result.stdout.strip(), f"worktime {__version__}")
 
 
 class SessionCommandTests(unittest.TestCase):
@@ -544,6 +593,67 @@ class DashboardServerTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+
+class DashboardRestartMessageTests(unittest.TestCase):
+    """Unit test (not a real subprocess): `worktime dashboard` prints a note
+    when `control.ensure_current` replaced an outdated background server.
+
+    A full integration test would need a fake "old" server plus a real
+    background process to send SIGTERM to; that's involved to make
+    reliable without ever leaving a stray process behind, so this mocks
+    `control.ensure_current` instead (its own behaviour is covered by
+    tests.test_control.EnsureCurrentTests).
+    """
+
+    def _env(self, tmp_path: Path) -> dict:
+        cfg_path = tmp_path / "config.toml"
+        data_file = tmp_path / "data" / "worktime.csv"
+        cfg_path.write_text(f'data_file = "{data_file}"\n', encoding="utf-8")
+        return {
+            "WORKTIME_CONFIG": str(cfg_path),
+            "WORKTIME_NO_BROWSER": "1",
+            "WORKTIME_NO_AUTO_REPORTS": "1",
+            "HOME": str(tmp_path),
+        }
+
+    def test_restarted_status_prints_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp))
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch(
+                "worktime.control.ensure_current", return_value="restarted"
+            ) as mock_ensure, contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = cli.main(["dashboard"])
+
+        self.assertEqual(rc, 0)
+        mock_ensure.assert_called_once()
+        self.assertIn(
+            "Restarted the dashboard server (new version).", out.getvalue()
+        )
+
+    def test_running_status_prints_no_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp))
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch(
+                "worktime.control.ensure_current", return_value="running"
+            ) as mock_ensure, contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = cli.main(["dashboard"])
+
+        self.assertEqual(rc, 0)
+        mock_ensure.assert_called_once()
+        self.assertNotIn("Restarted", out.getvalue())
+
+    def test_started_status_prints_no_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._env(Path(tmp))
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch(
+                "worktime.control.ensure_current", return_value="started"
+            ) as mock_ensure, contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = cli.main(["dashboard"])
+
+        self.assertEqual(rc, 0)
+        mock_ensure.assert_called_once()
+        self.assertNotIn("Restarted", out.getvalue())
 
 
 def _write_workday_csv(data_file: Path) -> None:

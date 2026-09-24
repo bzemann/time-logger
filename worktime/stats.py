@@ -7,9 +7,13 @@ balance (worked minus target).
 
 Plain-language rules:
 
-- **Target per day**: the configured daily target on days that are a
-  configured workday and are not a configured day off, otherwise zero
-  (weekends and days off never carry a target).
+- **Target per day**: a per-date override, if one is configured for that
+  day, takes precedence over everything else (including on weekends; an
+  override of "0:00" behaves like a day off). Otherwise the configured
+  daily target on days that are a configured workday and are not a
+  configured day off, otherwise zero (weekends and days off never carry a
+  target). A date is never both a day off and an override (that is a
+  config error), so the two never conflict.
 - **Worked time per day**: the sum of the elapsed time of every session that
   *started* on that day. A session that crosses midnight counts entirely for
   its start date, and a still-running session counts with the time elapsed
@@ -30,9 +34,9 @@ Plain-language rules:
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from worktime.store import Entry
 
@@ -44,15 +48,26 @@ class Target:
     daily: timedelta
     workdays: frozenset[int]  # 0 = Monday
     days_off: frozenset[date] = frozenset()
+    overrides: Mapping[date, timedelta] = field(default_factory=dict)
 
     def for_day(self, d: date) -> timedelta:
+        if d in self.overrides:
+            return self.overrides[d]
         if d.weekday() in self.workdays and d not in self.days_off:
             return self.daily
         return timedelta(0)
 
     @classmethod
     def from_config(cls, cfg) -> "Target":
-        return cls(timedelta(minutes=cfg.daily_target_min), cfg.workdays, cfg.days_off)
+        return cls(
+            timedelta(minutes=cfg.daily_target_min),
+            cfg.workdays,
+            cfg.days_off,
+            overrides={
+                d: timedelta(minutes=m)
+                for d, m in getattr(cfg, "target_overrides", {}).items()
+            },
+        )
 
 
 @dataclass(frozen=True)

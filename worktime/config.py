@@ -14,7 +14,7 @@ import math
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -27,7 +27,15 @@ _WEEKDAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _HMM_RE = re.compile(r"^\d{1,2}:[0-5]\d$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-_ALLOWED_KEYS = {"data_file", "reports_dir", "daily_target", "workdays", "port", "days_off"}
+_ALLOWED_KEYS = {
+    "data_file",
+    "reports_dir",
+    "daily_target",
+    "workdays",
+    "port",
+    "days_off",
+    "target_overrides",
+}
 
 
 class ConfigError(Exception):
@@ -42,6 +50,7 @@ class Config:
     workdays: frozenset[int]
     port: int
     days_off: frozenset[date] = frozenset()
+    target_overrides: dict[date, int] = field(default_factory=dict)
 
 
 def config_path() -> Path:
@@ -115,14 +124,14 @@ def _parse_port(value) -> int:
     return value
 
 
-def _parse_date(s: str) -> date:
+def _parse_date(s: str, key_name: str = "days_off") -> date:
     """Parse a single date string in YYYY-MM-DD format."""
     if not _DATE_RE.match(s):
-        raise ConfigError(f"invalid date '{s}' in days_off, expected YYYY-MM-DD")
+        raise ConfigError(f"invalid date '{s}' in {key_name}, expected YYYY-MM-DD")
     try:
         return date.fromisoformat(s)
     except ValueError:
-        raise ConfigError(f"invalid date '{s}' in days_off, expected YYYY-MM-DD") from None
+        raise ConfigError(f"invalid date '{s}' in {key_name}, expected YYYY-MM-DD") from None
 
 
 def parse_days_off(value) -> frozenset[date]:
@@ -162,6 +171,61 @@ def parse_days_off(value) -> frozenset[date]:
     return frozenset(dates)
 
 
+def parse_target_overrides(value) -> dict[date, int]:
+    """Parse target_overrides value into a dict mapping date to minutes.
+
+    ``value`` must be a table (dict) whose keys are single dates
+    "YYYY-MM-DD" or inclusive ranges "YYYY-MM-DD..YYYY-MM-DD", and whose
+    values are daily-target style values (see ``parse_daily_target``). No
+    date may be defined more than once (directly or via overlapping
+    ranges).
+    """
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f'target_overrides must be a table like {{"2026-12-24" = "4:15"}}, got {value!r}'
+        )
+
+    overrides: dict[date, int] = {}
+
+    for key, val in value.items():
+        key_stripped = key.strip()
+
+        if ".." in key_stripped:
+            start, end = (
+                _parse_date(p.strip(), "target_overrides")
+                for p in key_stripped.split("..", 1)
+            )
+
+            if start > end:
+                raise ConfigError(f"target_overrides range '{key}' has start after end")
+
+            range_days = (end - start).days + 1
+            if range_days > 366:
+                raise ConfigError(f"target_overrides range '{key}' is longer than 366 days")
+
+            dates = []
+            current = start
+            while current <= end:
+                dates.append(current)
+                current += timedelta(days=1)
+        else:
+            dates = [_parse_date(key_stripped, "target_overrides")]
+
+        try:
+            minutes = parse_daily_target(val)
+        except ConfigError as e:
+            raise ConfigError(f"target_overrides['{key}']: {e}") from e
+
+        for d in dates:
+            if d in overrides:
+                raise ConfigError(
+                    f"target_overrides: {d.isoformat()} is defined more than once"
+                )
+            overrides[d] = minutes
+
+    return overrides
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load the configuration from ``path`` (or the default location)."""
     if path is None:
@@ -176,6 +240,7 @@ def load_config(path: Path | None = None) -> Config:
             workdays=DEFAULT_WORKDAYS,
             port=DEFAULT_PORT,
             days_off=frozenset(),
+            target_overrides={},
         )
 
     try:
@@ -222,6 +287,17 @@ def load_config(path: Path | None = None) -> Config:
             days_off = parse_days_off(raw["days_off"])
         else:
             days_off = frozenset()
+
+        if "target_overrides" in raw:
+            target_overrides = parse_target_overrides(raw["target_overrides"])
+        else:
+            target_overrides = {}
+
+        conflicts = sorted(d for d in target_overrides if d in days_off)
+        if conflicts:
+            raise ConfigError(
+                f"{conflicts[0].isoformat()} is in both days_off and target_overrides"
+            )
     except ConfigError as e:
         raise ConfigError(f"{path}: {e}") from e
 
@@ -232,4 +308,5 @@ def load_config(path: Path | None = None) -> Config:
         workdays=workdays,
         port=port,
         days_off=days_off,
+        target_overrides=target_overrides,
     )

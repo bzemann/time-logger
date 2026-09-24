@@ -196,6 +196,8 @@ class InstallScriptTests(unittest.TestCase):
             self.assertIn(line, result.stdout)
         self.assertIn("rofi", result.stdout)
         self.assertNotIn("+x exec", result.stdout)
+        self.assertIn("──── paste into ~/.config/i3/config ────", result.stdout)
+        self.assertIn("──── end ────", result.stdout)
 
     def test_polybar_lines_and_generic_hint_without_config(self):
         result = run_install([], self.home)
@@ -206,6 +208,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn(f"click-left = {WT} dashboard", result.stdout)
         self.assertIn("interval = 15", result.stdout)
         self.assertIn("If you use polybar", result.stdout)
+        self.assertIn("──── paste into ~/.config/polybar/config.ini ────", result.stdout)
+        self.assertIn(
+            "polybar: then restart it: ~/.config/polybar/launch.sh (or restart i3 with $mod+shift+r).",
+            result.stdout,
+        )
 
     def test_dependency_hint_shown_when_missing(self):
         with tempfile.TemporaryDirectory() as tool_tmp:
@@ -368,6 +375,67 @@ class InstallScriptTests(unittest.TestCase):
         result = run_install([], self.home)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("polybar: worktime module already configured", result.stdout)
+        self.assertNotIn("──── paste into ~/.config/polybar/config.ini ────", result.stdout)
+        # No modules-right line in this config at all: the generic hint is
+        # printed, and since nothing needed pasting, no restart line.
+        self.assertIn(
+            "polybar: add 'worktime' to one of your modules-left/center/right lines.",
+            result.stdout,
+        )
+        self.assertNotIn(
+            "polybar: then restart it: ~/.config/polybar/launch.sh (or restart i3 with $mod+shift+r).",
+            result.stdout,
+        )
+
+    def test_polybar_module_present_but_modules_right_needs_worktime(self):
+        # The module was pasted in already, but 'worktime' was never added
+        # to modules-right: the modules-right check must still run and
+        # suggest the replace frame, independently of the module's state.
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[module/worktime]\ntype = custom/script\n"
+            "[bar/main]\nmodules-right = shot wifi memory disk volume time powerbtn\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("polybar: worktime module already configured", result.stdout)
+        self.assertNotIn("──── paste into ~/.config/polybar/config.ini ────", result.stdout)
+        self.assertIn(
+            "polybar: in [bar/main], REPLACE your existing modules-right line with:",
+            result.stdout,
+        )
+        self.assertIn("──── replace this line in ~/.config/polybar/config.ini ────", result.stdout)
+        self.assertIn(
+            "modules-right = shot wifi memory disk volume worktime time powerbtn",
+            result.stdout,
+        )
+        self.assertIn(
+            "polybar: then restart it: ~/.config/polybar/launch.sh (or restart i3 with $mod+shift+r).",
+            result.stdout,
+        )
+
+    def test_polybar_module_and_modules_right_both_already_configured(self):
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[module/worktime]\ntype = custom/script\n"
+            "[bar/main]\nmodules-right = shot worktime time powerbtn\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("polybar: worktime module already configured", result.stdout)
+        self.assertIn("polybar: 'worktime' is already in modules-right", result.stdout)
+        self.assertNotIn("──── paste into ~/.config/polybar/config.ini ────", result.stdout)
+        self.assertNotIn("──── replace this line in ~/.config/polybar/config.ini ────", result.stdout)
+        self.assertNotIn(
+            "polybar: then restart it: ~/.config/polybar/launch.sh (or restart i3 with $mod+shift+r).",
+            result.stdout,
+        )
 
     def test_polybar_modules_right_already_has_worktime(self):
         polybar_dir = self.home / ".config" / "polybar"
@@ -380,6 +448,14 @@ class InstallScriptTests(unittest.TestCase):
         result = run_install([], self.home)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("polybar: 'worktime' is already in modules-right", result.stdout)
+        self.assertNotIn("──── replace this line in ~/.config/polybar/config.ini ────", result.stdout)
+        # The module itself is still missing, so its frame (and the
+        # restart line, since something needs pasting) must still appear.
+        self.assertIn("──── paste into ~/.config/polybar/config.ini ────", result.stdout)
+        self.assertIn(
+            "polybar: then restart it: ~/.config/polybar/launch.sh (or restart i3 with $mod+shift+r).",
+            result.stdout,
+        )
 
     def test_polybar_modules_right_without_time_appends_at_end(self):
         polybar_dir = self.home / ".config" / "polybar"
@@ -392,6 +468,11 @@ class InstallScriptTests(unittest.TestCase):
         result = run_install([], self.home)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("modules-right = a b c worktime", result.stdout)
+        self.assertIn(
+            "polybar: in [bar/main], REPLACE your existing modules-right line with:",
+            result.stdout,
+        )
+        self.assertIn("──── replace this line in ~/.config/polybar/config.ini ────", result.stdout)
 
     def test_polybar_modules_right_rebuild_realistic_inline(self):
         # Fixture-independent version of RealDebianConfigTests.test_real_configs_install_cleanly's
@@ -530,6 +611,79 @@ class InstallScriptTests(unittest.TestCase):
         )
         self.assertEqual(stop_result.returncode, 0, stop_result.stderr)
         self.assertIn("Stopped:", stop_result.stdout)
+
+
+def _extract_frames(text):
+    """Return a list of (header_line, [content_lines]) for each
+    "──── ... ────" / "──── end ────" block in install.sh's output."""
+    lines = text.splitlines()
+    frames = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("──── ") and line.endswith(" ────") and line != "──── end ────":
+            header = line
+            content = []
+            i += 1
+            while i < len(lines) and lines[i] != "──── end ────":
+                content.append(lines[i])
+                i += 1
+            frames.append((header, content))
+        i += 1
+    return frames
+
+
+class FrameFormatTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+
+    def test_frames_are_well_formed(self):
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[bar/main]\nmodules-right = shot wifi memory disk volume time powerbtn\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = _extract_frames(result.stdout)
+        self.assertTrue(frames, "no frames found in install output")
+
+        for header, content in frames:
+            self.assertTrue(content, f"empty frame: {header}")
+            for line in content:
+                for prefix in ("polybar:", "i3:", "Aerospace:", "Warning:"):
+                    self.assertFalse(
+                        line.startswith(prefix),
+                        f"instruction line inside frame: {line!r}",
+                    )
+                self.assertNotIn("e.g.", line, f"'e.g.' found inside frame: {line!r}")
+
+        # The number of frame starts equals the number of "──── end ────" lines.
+        self.assertEqual(result.stdout.count("──── end ────"), len(frames))
+
+        module_frame = next(
+            content for header, content in frames if "paste into ~/.config/polybar/config.ini" in header
+        )
+        self.assertFalse(
+            any(line.startswith("modules-right") for line in module_frame),
+            "the polybar module frame must not contain a modules-right line",
+        )
+
+        replace_frame = next(
+            content
+            for header, content in frames
+            if "replace this line in ~/.config/polybar/config.ini" in header
+        )
+        modules_right_lines = [line for line in replace_frame if line.startswith("modules-right =")]
+        self.assertEqual(
+            len(modules_right_lines),
+            1,
+            f"the replace frame must contain exactly one modules-right line, got {replace_frame!r}",
+        )
 
 
 @unittest.skipUnless(

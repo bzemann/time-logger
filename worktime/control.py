@@ -38,6 +38,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from worktime import __version__
+from worktime.config import config_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -67,6 +70,61 @@ def probe(port: int, timeout: float = 1.0) -> str:
     if isinstance(data, dict) and data.get("app") == "worktime":
         return "ours"
     return "other"
+
+
+def server_version(port: int, timeout: float = 1.0) -> str | None:
+    """Return the ``version`` reported by our server on ``port``, or None.
+
+    None covers everything that isn't a healthy response from *our* app
+    with a string ``version`` field: a refused connection, a non-worktime
+    app, bad JSON, a timeout, or an old server that predates the
+    ``version`` field. Never raises.
+    """
+    url = f"http://127.0.0.1:{port}/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            raw = resp.read()
+        data = json.loads(raw)
+    except Exception:
+        return None
+
+    if isinstance(data, dict) and data.get("app") == "worktime":
+        version = data.get("version")
+        if isinstance(version, str):
+            return version
+    return None
+
+
+def ensure_current(cfg) -> str:
+    """Make sure the dashboard server for ``cfg`` is running and current.
+
+    Returns "started" (nothing was running), "restarted" (an old-code
+    instance was replaced) or "running" (already up to date). Raises
+    ControlError if the port is used by another program, or if stopping
+    or starting fails.
+    """
+    state = probe(cfg.port)
+
+    if state == "other":
+        raise ControlError(
+            f"Port {cfg.port} is used by another program. "
+            f"Set a different 'port' in {config_path()}."
+        )
+
+    if state == "free":
+        start_background(cfg)
+        return "started"
+
+    version = server_version(cfg.port)
+    if version == __version__:
+        return "running"
+
+    # After a `git pull`, a server started with older code keeps serving
+    # it until restarted. This check replaces the manual `worktime
+    # stop-server` step that used to be required after an update.
+    stop_background(cfg)
+    start_background(cfg)
+    return "restarted"
 
 
 def start_background(cfg, wait: float = 5.0) -> None:

@@ -40,6 +40,42 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(target.daily, td(8, 30))
         self.assertEqual(target.workdays, frozenset({0, 1, 2, 3, 4}))
         self.assertEqual(target.days_off, frozenset())
+        self.assertEqual(target.overrides, {})
+
+    def test_from_config_with_target_overrides(self):
+        cfg = types.SimpleNamespace(
+            daily_target_min=510,
+            workdays=frozenset({0, 1, 2, 3, 4}),
+            days_off=frozenset(),
+            target_overrides={date(2026, 12, 24): 255},
+        )
+        target = stats.Target.from_config(cfg)
+        self.assertEqual(target.overrides, {date(2026, 12, 24): td(4, 15)})
+        self.assertEqual(target.for_day(date(2026, 12, 24)), td(4, 15))
+
+    def test_for_day_override_on_workday(self):
+        target = stats.Target(
+            td(8),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 23): td(4, 15)},  # Wednesday
+        )
+        self.assertEqual(target.for_day(date(2026, 9, 23)), td(4, 15))
+
+    def test_for_day_override_on_weekend_applies(self):
+        target = stats.Target(
+            td(8),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 26): td(6)},  # Saturday
+        )
+        self.assertEqual(target.for_day(date(2026, 9, 26)), td(6))
+
+    def test_for_day_override_zero_acts_like_day_off(self):
+        target = stats.Target(
+            td(8),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 21): timedelta(0)},  # Monday
+        )
+        self.assertEqual(target.for_day(date(2026, 9, 21)), timedelta(0))
 
 
 class TrackingStartTests(unittest.TestCase):
@@ -155,6 +191,73 @@ class DailyTargetsTests(unittest.TestCase):
             targets = stats.daily_targets(entries, now, start, end, target)
             summary = stats.summarize(entries, now, start, end, target)
             self.assertEqual(sum(targets.values(), timedelta(0)), summary.target)
+
+
+class TargetOverridesIntegrationTests(unittest.TestCase):
+    def test_override_zero_not_counted_in_target_days(self):
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 12, 0, 0)),
+        ]
+        now = datetime(2026, 9, 21, 18, 0, 0)
+        target = stats.Target(
+            td(8),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 21): timedelta(0)},
+        )
+        summary = stats.summarize(entries, now, date(2026, 9, 21), date(2026, 9, 21), target)
+        self.assertEqual(summary.target, timedelta(0))
+        self.assertEqual(summary.target_days, 0)
+
+    def test_summarize_week_with_one_half_day_override(self):
+        # Mon-Fri workweek, Wed has a half-day override of 4:15 instead
+        # of the normal 8:30 target.
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 16, 30, 0)),
+            Entry(datetime(2026, 9, 22, 8, 0, 0), datetime(2026, 9, 22, 16, 30, 0)),
+            Entry(datetime(2026, 9, 23, 8, 0, 0), datetime(2026, 9, 23, 12, 15, 0)),
+            Entry(datetime(2026, 9, 24, 8, 0, 0), datetime(2026, 9, 24, 16, 30, 0)),
+            Entry(datetime(2026, 9, 25, 8, 0, 0), datetime(2026, 9, 25, 16, 30, 0)),
+        ]
+        now = datetime(2026, 9, 25, 18, 0, 0)
+        target = stats.Target(
+            td(8, 30),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 23): td(4, 15)},
+        )
+        summary = stats.summarize(entries, now, date(2026, 9, 21), date(2026, 9, 27), target)
+        expected_target = td(8, 30) * 4 + td(4, 15)
+        self.assertEqual(summary.target, expected_target)
+        self.assertEqual(summary.target_days, 5)
+
+    def test_override_before_first_entry_gives_zero_via_window(self):
+        entries = [
+            Entry(datetime(2026, 9, 23, 8, 0, 0), datetime(2026, 9, 23, 12, 0, 0))
+        ]
+        now = datetime(2026, 9, 23, 18, 0, 0)
+        target = stats.Target(
+            td(8),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 21): td(4)},  # before tracking started
+        )
+        result = stats.daily_targets(
+            entries, now, date(2026, 9, 21), date(2026, 9, 23), target
+        )
+        self.assertEqual(result[date(2026, 9, 21)], timedelta(0))
+
+    def test_override_in_future_gives_zero_via_window(self):
+        entries = [
+            Entry(datetime(2026, 9, 21, 8, 0, 0), datetime(2026, 9, 21, 12, 0, 0))
+        ]
+        now = datetime(2026, 9, 23, 18, 0, 0)
+        target = stats.Target(
+            td(8),
+            frozenset({0, 1, 2, 3, 4}),
+            overrides={date(2026, 9, 25): td(4)},  # in the future
+        )
+        result = stats.daily_targets(
+            entries, now, date(2026, 9, 23), date(2026, 9, 25), target
+        )
+        self.assertEqual(result[date(2026, 9, 25)], timedelta(0))
 
 
 class SummarizeTests(unittest.TestCase):

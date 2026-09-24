@@ -44,6 +44,23 @@ def _format_days_off(days_off) -> str:
         return f"{n} days ({first} … {last})"
 
 
+def _format_overrides(overrides) -> str:
+    """Format target_overrides dict[date, int] for display."""
+    if not overrides:
+        return "(none)"
+
+    sorted_dates = sorted(overrides)
+    n = len(sorted_dates)
+
+    if n == 1:
+        d = sorted_dates[0]
+        return f"1 day ({d} = {_format_hmm(overrides[d])})"
+    else:
+        first = sorted_dates[0]
+        last = sorted_dates[-1]
+        return f"{n} days ({first} … {last})"
+
+
 def _cmd_config(args: argparse.Namespace) -> int:
     path = config_path()
     found = "found" if path.exists() else "not found, using defaults"
@@ -59,6 +76,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     print(f"daily target: {_format_hmm(cfg.daily_target_min)}")
     print(f"workdays:     {workdays}")
     print(f"days off:     {_format_days_off(cfg.days_off)}")
+    print(f"overrides:    {_format_overrides(getattr(cfg, 'target_overrides', {}))}")
     print(f"port:         {cfg.port}")
     return 0
 
@@ -221,15 +239,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_dashboard(args: argparse.Namespace) -> int:
     cfg = load_config()
     url = f"http://127.0.0.1:{cfg.port}/"
-    state = control.probe(cfg.port)
+    status = control.ensure_current(cfg)
 
-    if state == "other":
-        raise ControlError(
-            f"Port {cfg.port} is used by another program. "
-            f"Set a different 'port' in {config_path()}."
-        )
-    if state == "free":
-        control.start_background(cfg)
+    if status == "restarted":
+        print("Restarted the dashboard server (new version).")
 
     opened = browser.open_url(url)
     print(url if opened else f"Open {url} in your browser")

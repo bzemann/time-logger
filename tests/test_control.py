@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from worktime import control
+from worktime import __version__, control
 from worktime.control import ControlError
 
 
@@ -28,7 +28,7 @@ class ProbeTests(unittest.TestCase):
     def test_ours(self):
         with patch(
             "worktime.control.urllib.request.urlopen",
-            return_value=self._urlopen_ok({"app": "worktime", "version": "0.1.0"}),
+            return_value=self._urlopen_ok({"app": "worktime", "version": __version__}),
         ):
             self.assertEqual(control.probe(1), "ours")
 
@@ -208,6 +208,151 @@ class StopBackgroundTests(unittest.TestCase):
             ):
                 with self.assertRaises(ControlError):
                     control.stop_background(cfg, wait=0.3)
+
+
+class ServerVersionTests(unittest.TestCase):
+    def _urlopen_ok(self, payload):
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+        cm.__exit__.return_value = False
+        return cm
+
+    def test_returns_version_string(self):
+        with patch(
+            "worktime.control.urllib.request.urlopen",
+            return_value=self._urlopen_ok({"app": "worktime", "version": "1.2.3"}),
+        ):
+            self.assertEqual(control.server_version(1), "1.2.3")
+
+    def test_none_for_wrong_app(self):
+        with patch(
+            "worktime.control.urllib.request.urlopen",
+            return_value=self._urlopen_ok({"app": "something-else", "version": "1.2.3"}),
+        ):
+            self.assertIsNone(control.server_version(1))
+
+    def test_none_for_missing_version_field(self):
+        with patch(
+            "worktime.control.urllib.request.urlopen",
+            return_value=self._urlopen_ok({"app": "worktime"}),
+        ):
+            self.assertIsNone(control.server_version(1))
+
+    def test_none_for_non_string_version(self):
+        with patch(
+            "worktime.control.urllib.request.urlopen",
+            return_value=self._urlopen_ok({"app": "worktime", "version": 1}),
+        ):
+            self.assertIsNone(control.server_version(1))
+
+    def test_none_for_bad_json(self):
+        cm = MagicMock()
+        cm.__enter__.return_value.read.return_value = b"not json"
+        cm.__exit__.return_value = False
+        with patch("worktime.control.urllib.request.urlopen", return_value=cm):
+            self.assertIsNone(control.server_version(1))
+
+    def test_none_when_refused(self):
+        with patch(
+            "worktime.control.urllib.request.urlopen",
+            side_effect=ConnectionRefusedError(),
+        ):
+            self.assertIsNone(control.server_version(1))
+
+    def test_none_on_timeout(self):
+        with patch(
+            "worktime.control.urllib.request.urlopen",
+            side_effect=TimeoutError(),
+        ):
+            self.assertIsNone(control.server_version(1))
+
+
+class EnsureCurrentTests(unittest.TestCase):
+    def test_free_starts_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp), port=1)
+            with patch("worktime.control.probe", return_value="free"), patch(
+                "worktime.control.start_background"
+            ) as mock_start, patch(
+                "worktime.control.stop_background"
+            ) as mock_stop, patch(
+                "worktime.control.server_version"
+            ) as mock_version:
+                status = control.ensure_current(cfg)
+
+        self.assertEqual(status, "started")
+        mock_start.assert_called_once_with(cfg)
+        mock_stop.assert_not_called()
+        mock_version.assert_not_called()
+
+    def test_ours_same_version_does_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp), port=1)
+            with patch("worktime.control.probe", return_value="ours"), patch(
+                "worktime.control.server_version", return_value=control.__version__
+            ), patch("worktime.control.start_background") as mock_start, patch(
+                "worktime.control.stop_background"
+            ) as mock_stop:
+                status = control.ensure_current(cfg)
+
+        self.assertEqual(status, "running")
+        mock_start.assert_not_called()
+        mock_stop.assert_not_called()
+
+    def test_ours_older_version_restarts_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp), port=1)
+            calls = []
+            with patch("worktime.control.probe", return_value="ours"), patch(
+                "worktime.control.server_version", return_value="0.1.0"
+            ), patch(
+                "worktime.control.start_background",
+                side_effect=lambda c: calls.append("start"),
+            ) as mock_start, patch(
+                "worktime.control.stop_background",
+                side_effect=lambda c: calls.append("stop"),
+            ) as mock_stop:
+                status = control.ensure_current(cfg)
+
+        self.assertEqual(status, "restarted")
+        mock_stop.assert_called_once_with(cfg)
+        mock_start.assert_called_once_with(cfg)
+        self.assertEqual(calls, ["stop", "start"])
+
+    def test_ours_none_version_restarts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp), port=1)
+            with patch("worktime.control.probe", return_value="ours"), patch(
+                "worktime.control.server_version", return_value=None
+            ), patch("worktime.control.start_background") as mock_start, patch(
+                "worktime.control.stop_background"
+            ) as mock_stop:
+                status = control.ensure_current(cfg)
+
+        self.assertEqual(status, "restarted")
+        mock_stop.assert_called_once_with(cfg)
+        mock_start.assert_called_once_with(cfg)
+
+    def test_other_raises_control_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp), port=1)
+            with patch("worktime.control.probe", return_value="other"):
+                with self.assertRaises(ControlError) as cm:
+                    control.ensure_current(cfg)
+        self.assertIn("used by another program", str(cm.exception))
+
+    def test_stop_failure_propagates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp), port=1)
+            with patch("worktime.control.probe", return_value="ours"), patch(
+                "worktime.control.server_version", return_value="0.1.0"
+            ), patch(
+                "worktime.control.stop_background",
+                side_effect=ControlError("did not stop"),
+            ), patch("worktime.control.start_background") as mock_start:
+                with self.assertRaises(ControlError):
+                    control.ensure_current(cfg)
+        mock_start.assert_not_called()
 
 
 if __name__ == "__main__":

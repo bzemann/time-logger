@@ -201,8 +201,10 @@ do_install() {
     esac
 
     echo ""
-    echo 'i3: paste these lines into your i3 config, then reload i3 ($mod+shift+c):'
+    echo 'i3: add these lines to ~/.config/i3/config, then reload i3 ($mod+shift+c):'
+    echo "──── paste into ~/.config/i3/config ────"
     sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$TEMPLATE" | sed "s|@WORKTIME@|$WT|g"
+    echo "──── end ────"
 
     CONF=""
     for cfg in "$HOME/.config/i3/config" "$HOME/.i3/config"; do
@@ -256,8 +258,6 @@ do_install() {
     fi
 
     echo ""
-    echo "polybar: add this module to ~/.config/polybar/config.ini:"
-    sed -e '/^;/d' -e '/^[[:space:]]*$/d' "$POLYBAR_TEMPLATE" | sed "s|@WORKTIME@|$WT|g"
 
     POLY_CONF=""
     for cfg in "$HOME/.config/polybar/config.ini" "$HOME/.config/polybar/config"; do
@@ -267,57 +267,81 @@ do_install() {
         fi
     done
 
+    module_already=0
+    if [ -n "$POLY_CONF" ] && grep -F -q '[module/worktime]' "$POLY_CONF" 2>/dev/null; then
+        module_already=1
+    fi
+
+    printed_something_to_paste=0
+
+    if [ "$module_already" = "1" ]; then
+        echo "polybar: worktime module already configured"
+    else
+        echo "polybar: add this module to ~/.config/polybar/config.ini:"
+        echo "──── paste into ~/.config/polybar/config.ini ────"
+        sed -e '/^;/d' -e '/^[[:space:]]*$/d' "$POLYBAR_TEMPLATE" | sed "s|@WORKTIME@|$WT|g"
+        echo "──── end ────"
+        printed_something_to_paste=1
+    fi
+
+    # The modules-right check runs regardless of the module's state above:
+    # the module block and modules-right can be out of sync (e.g. the
+    # module was pasted in already, but 'worktime' was never added to
+    # modules-right).
     if [ -n "$POLY_CONF" ]; then
-        if grep -F -q '[module/worktime]' "$POLY_CONF" 2>/dev/null; then
-            echo "polybar: worktime module already configured"
-        else
-            mr_line=$(grep -E '^[[:space:]]*modules-right[[:space:]]*=' "$POLY_CONF" 2>/dev/null | head -n 1 || true)
-            if [ -n "$mr_line" ]; then
-                already=$(printf '%s\n' "$mr_line" | awk -F'=' '
-                    {
-                        val = $2
-                        n = split(val, arr, /[ \t]+/)
-                        for (i = 1; i <= n; i++) {
-                            if (arr[i] == "worktime") {
-                                print "yes"
-                                exit
-                            }
+        mr_line=$(grep -E '^[[:space:]]*modules-right[[:space:]]*=' "$POLY_CONF" 2>/dev/null | head -n 1 || true)
+        if [ -n "$mr_line" ]; then
+            already=$(printf '%s\n' "$mr_line" | awk -F'=' '
+                {
+                    val = $2
+                    n = split(val, arr, /[ \t]+/)
+                    for (i = 1; i <= n; i++) {
+                        if (arr[i] == "worktime") {
+                            print "yes"
+                            exit
                         }
-                    }')
-                if [ "$already" = "yes" ]; then
-                    echo "polybar: 'worktime' is already in modules-right"
-                else
-                    new_line=$(printf '%s\n' "$mr_line" | awk -F'=' '
-                        {
-                            key = $1
-                            val = $2
-                            gsub(/^[ \t]+|[ \t]+$/, "", key)
-                            gsub(/^[ \t]+|[ \t]+$/, "", val)
-                            n = split(val, arr, /[ \t]+/)
-                            inserted = 0
-                            out = ""
-                            for (i = 1; i <= n; i++) {
-                                if (arr[i] == "time" && inserted == 0) {
-                                    out = out "worktime "
-                                    inserted = 1
-                                }
-                                out = out arr[i] " "
-                            }
-                            if (inserted == 0) {
-                                out = out "worktime "
-                            }
-                            gsub(/[ \t]+$/, "", out)
-                            print key " = " out
-                        }')
-                    echo "polybar: and add 'worktime' to modules-right, e.g.:"
-                    echo "$new_line"
-                fi
+                    }
+                }')
+            if [ "$already" = "yes" ]; then
+                echo "polybar: 'worktime' is already in modules-right"
             else
-                echo "polybar: add 'worktime' to one of your modules-left/center/right lines."
+                new_line=$(printf '%s\n' "$mr_line" | awk -F'=' '
+                    {
+                        key = $1
+                        val = $2
+                        gsub(/^[ \t]+|[ \t]+$/, "", key)
+                        gsub(/^[ \t]+|[ \t]+$/, "", val)
+                        n = split(val, arr, /[ \t]+/)
+                        inserted = 0
+                        out = ""
+                        for (i = 1; i <= n; i++) {
+                            if (arr[i] == "time" && inserted == 0) {
+                                out = out "worktime "
+                                inserted = 1
+                            }
+                            out = out arr[i] " "
+                        }
+                        if (inserted == 0) {
+                            out = out "worktime "
+                        }
+                        gsub(/[ \t]+$/, "", out)
+                        print key " = " out
+                    }')
+                echo "polybar: in [bar/main], REPLACE your existing modules-right line with:"
+                echo "──── replace this line in ~/.config/polybar/config.ini ────"
+                echo "$new_line"
+                echo "──── end ────"
+                printed_something_to_paste=1
             fi
+        else
+            echo "polybar: add 'worktime' to one of your modules-left/center/right lines."
         fi
     else
         echo "(If you use polybar: add 'worktime' to one of your modules-left/center/right lines in ~/.config/polybar/config.ini.)"
+    fi
+
+    if [ "$printed_something_to_paste" = "1" ]; then
+        echo "polybar: then restart it: ~/.config/polybar/launch.sh (or restart i3 with \$mod+shift+r)."
     fi
 
     echo ""

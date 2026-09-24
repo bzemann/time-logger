@@ -20,8 +20,11 @@ from worktime.store import row_to_entry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README_PATH = REPO_ROOT / "README.md"
+CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
+INIT_PATH = REPO_ROOT / "worktime" / "__init__.py"
 
 ENV_VAR_RE = re.compile(r"WORKTIME_[A-Z_]+")
+VERSION_RE = re.compile(r'__version__\s*=\s*["\']([^"\']+)["\']')
 
 HEADINGS = [
     "# WorkTime Logger",
@@ -252,6 +255,60 @@ class TestHeadings(TestReadmeExists):
         for heading in HEADINGS:
             with self.subTest(heading=heading):
                 self.assertIn(heading, self.text, f"README.md is missing heading {heading!r}")
+
+
+class TestTargetOverrides(TestReadmeExists):
+    def test_target_overrides_documented(self):
+        self.assertIn("target_overrides", self.text)
+
+    def test_config_command_overrides_line_documented(self):
+        self.assertIn("overrides:", self.text)
+
+
+class TestChangelog(TestReadmeExists):
+    def test_readme_mentions_changelog(self):
+        self.assertIn("CHANGELOG.md", self.text)
+
+    def test_changelog_exists(self):
+        self.assertTrue(CHANGELOG_PATH.exists(), "CHANGELOG.md is missing")
+
+    def test_changelog_has_0_2_0_and_what_you_need_to_do(self):
+        text = CHANGELOG_PATH.read_text(encoding="utf-8")
+        self.assertIn("## 0.2.0", text)
+        self.assertIn("What you need to do", text)
+
+    def test_changelog_has_heading_for_current_version(self):
+        self.assertTrue(INIT_PATH.exists(), "worktime/__init__.py is missing")
+        init_text = INIT_PATH.read_text(encoding="utf-8")
+        match = VERSION_RE.search(init_text)
+        self.assertIsNotNone(match, "could not find __version__ in worktime/__init__.py")
+        version = match.group(1)
+
+        changelog_text = CHANGELOG_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            f"## {version}",
+            changelog_text,
+            f"CHANGELOG.md has no heading for the current version {version!r}",
+        )
+
+
+class TestUpdatingSection(TestReadmeExists):
+    def _updating_section(self) -> str:
+        match = re.search(
+            r"^## Updating\n(.*?)(?=^## )", self.text, re.DOTALL | re.MULTILINE
+        )
+        self.assertIsNotNone(match, "could not find the '## Updating' section")
+        return match.group(1)
+
+    def test_stop_server_no_longer_a_required_step(self):
+        self.assertNotIn("run `worktime stop-server` once", self.text)
+
+    def test_auto_restart_mentioned(self):
+        section = self._updating_section()
+        self.assertTrue(
+            "restarts itself" in section or "restarts automatically" in section,
+            "the '## Updating' section doesn't mention the server's automatic restart",
+        )
 
 
 if __name__ == "__main__":

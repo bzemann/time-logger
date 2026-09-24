@@ -20,6 +20,7 @@ from worktime.config import (
     load_config,
     parse_daily_target,
     parse_days_off,
+    parse_target_overrides,
 )
 
 
@@ -319,6 +320,127 @@ class LoadConfigDaysOffTests(unittest.TestCase):
             _write(cfg_path, 'days_off = ["2026-13-01"]\n')
             with self.assertRaisesRegex(ConfigError, str(cfg_path)):
                 load_config(cfg_path)
+
+
+class ParseTargetOverridesTests(unittest.TestCase):
+    def test_single_date_hmm(self):
+        result = parse_target_overrides({"2026-12-24": "4:15"})
+        self.assertEqual(result, {date(2026, 12, 24): 255})
+
+    def test_single_date_hours(self):
+        result = parse_target_overrides({"2026-12-24": 4})
+        self.assertEqual(result, {date(2026, 12, 24): 240})
+
+    def test_range_of_three_days(self):
+        result = parse_target_overrides({"2027-03-01..2027-03-03": "6:00"})
+        self.assertEqual(len(result), 3)
+        for d in (date(2027, 3, 1), date(2027, 3, 2), date(2027, 3, 3)):
+            self.assertEqual(result[d], 360)
+
+    def test_zero_allowed(self):
+        result = parse_target_overrides({"2026-12-24": "0:00"})
+        self.assertEqual(result, {date(2026, 12, 24): 0})
+
+    def test_empty_dict(self):
+        self.assertEqual(parse_target_overrides({}), {})
+
+    def test_invalid_value_message_mentions_key(self):
+        with self.assertRaisesRegex(ConfigError, r"target_overrides\['2026-12-24'\]"):
+            parse_target_overrides({"2026-12-24": "4:7"})
+
+    def test_invalid_key_date_message_mentions_target_overrides(self):
+        with self.assertRaisesRegex(ConfigError, "target_overrides"):
+            parse_target_overrides({"2026-13-01": "4:00"})
+
+    def test_range_start_after_end(self):
+        with self.assertRaisesRegex(ConfigError, "has start after end"):
+            parse_target_overrides({"2027-03-05..2027-03-01": "4:00"})
+
+    def test_range_too_long(self):
+        with self.assertRaisesRegex(ConfigError, "longer than 366 days"):
+            parse_target_overrides({"2026-01-01..2027-01-02": "4:00"})
+
+    def test_overlapping_ranges_raise(self):
+        with self.assertRaisesRegex(ConfigError, "defined more than once"):
+            parse_target_overrides(
+                {
+                    "2027-03-01..2027-03-05": "6:00",
+                    "2027-03-03": "4:00",
+                }
+            )
+
+    def test_not_a_table_raises(self):
+        with self.assertRaisesRegex(ConfigError, "target_overrides must be a table"):
+            parse_target_overrides("2026-12-24")
+
+
+class LoadConfigTargetOverridesTests(unittest.TestCase):
+    def test_missing_file_defaults_to_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist" / "config.toml"
+            cfg = load_config(missing)
+
+        self.assertEqual(cfg.target_overrides, {})
+
+    def test_full_target_overrides_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(
+                cfg_path,
+                '[target_overrides]\n"2026-12-24" = "4:15"\n"2027-03-01..2027-03-05" = "6:00"\n',
+            )
+            cfg = load_config(cfg_path)
+
+        self.assertEqual(cfg.target_overrides[date(2026, 12, 24)], 255)
+        self.assertEqual(len(cfg.target_overrides), 6)
+
+    def test_conflict_with_days_off_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(
+                cfg_path,
+                'days_off = ["2026-12-24"]\n[target_overrides]\n"2026-12-24" = "4:15"\n',
+            )
+            with self.assertRaisesRegex(
+                ConfigError, "is in both days_off and target_overrides"
+            ):
+                load_config(cfg_path)
+
+    def test_conflict_error_reports_earliest_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(
+                cfg_path,
+                'days_off = ["2026-12-24..2026-12-26"]\n'
+                '[target_overrides]\n"2026-12-25" = "4:00"\n"2026-12-26" = "4:00"\n',
+            )
+            with self.assertRaisesRegex(ConfigError, "2026-12-25 is in both"):
+                load_config(cfg_path)
+
+    def test_not_a_table_raises_with_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(cfg_path, 'target_overrides = "2026-12-24"\n')
+            with self.assertRaisesRegex(ConfigError, str(cfg_path)):
+                load_config(cfg_path)
+
+    def test_invalid_target_overrides_error_includes_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.toml"
+            _write(cfg_path, '[target_overrides]\n"2026-12-24" = "4:7"\n')
+            with self.assertRaisesRegex(ConfigError, str(cfg_path)):
+                load_config(cfg_path)
+
+
+class DaysOffMessagesUnchangedTests(unittest.TestCase):
+    """days_off error messages must stay byte-identical after the
+    _parse_date refactor for target_overrides."""
+
+    def test_invalid_date_message(self):
+        with self.assertRaisesRegex(
+            ConfigError, r"invalid date '2026-13-01' in days_off, expected YYYY-MM-DD"
+        ):
+            parse_days_off(["2026-13-01"])
 
 
 if __name__ == "__main__":

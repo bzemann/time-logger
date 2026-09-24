@@ -191,8 +191,14 @@ do_install() {
     esac
 
     echo ""
-    echo "Aerospace: paste these lines under [mode.main.binding] in your aerospace.toml, then reload (alt-shift-c):"
+    AS_DEST="$HOME/.config/aerospace/aerospace.toml"
+    if [ ! -f "$AS_DEST" ] && [ -f "$HOME/.aerospace.toml" ]; then
+        AS_DEST="$HOME/.aerospace.toml"
+    fi
+    echo "Aerospace: add these lines under [mode.main.binding] in your aerospace.toml, then reload (alt-shift-c):"
+    echo "──── paste into $AS_DEST (under [mode.main.binding]) ────"
     sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$TEMPLATE" | sed "s|@WORKTIME@|$WT|g"
+    echo "──── end ────"
 
     for key in t x d r; do
         bind="alt-shift-$key"
