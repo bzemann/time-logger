@@ -169,6 +169,24 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    if args.short:
+        # A status-bar module (e.g. polybar) reads stdout only. "err" makes
+        # a broken CSV/config visible there instead of silently hiding the
+        # module; exit 0 either way so the bar keeps displaying it.
+        try:
+            cfg = load_config()
+            now = session.current_time()
+            result = session.status(cfg.data_file, now)
+        except Exception as e:
+            print("err")
+            print(f"worktime: {e}", file=sys.stderr)
+            return 0
+        if result.entry is not None:
+            print(session.format_duration(result.elapsed))
+        else:
+            print("")
+        return 0
+
     cfg = load_config()
     now = session.current_time()
     result = session.status(cfg.data_file, now)
@@ -289,6 +307,14 @@ def _build_parser() -> argparse.ArgumentParser:
     stop_parser.set_defaults(func=_cmd_stop, notify_errors=True)
 
     status_parser = subparsers.add_parser("status", help="Print the current state")
+    status_parser.add_argument(
+        "--short",
+        action="store_true",
+        help=(
+            "Print only the running time (e.g. '1h 24m') or an empty line; "
+            "for status bars"
+        ),
+    )
     status_parser.set_defaults(func=_cmd_status, notify_errors=False)
 
     serve_parser = subparsers.add_parser(

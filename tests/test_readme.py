@@ -112,7 +112,15 @@ class TestSubcommands(TestReadmeExists):
 
 class TestOptions(TestReadmeExists):
     def test_options_documented(self):
-        for opt in ("--at", "--last", "--date", "--no-open", "--port", "--version"):
+        for opt in (
+            "--at",
+            "--last",
+            "--date",
+            "--no-open",
+            "--port",
+            "--version",
+            "--short",
+        ):
             with self.subTest(option=opt):
                 self.assertIn(opt, self.text, f"README.md does not mention {opt!r}")
 
@@ -217,6 +225,26 @@ class TestExamples(TestReadmeExists):
                     )
                     checked += 1
         self.assertGreater(checked, 0, "no CSV example row with an end time to check")
+
+
+class TestPolybarAndDebianKeys(TestReadmeExists):
+    def test_short_status_documented(self):
+        self.assertIn("worktime status --short", self.text)
+
+    def test_polybar_module_documented(self):
+        self.assertIn("[module/worktime]", self.text)
+
+    def test_debian_stop_key_is_u(self):
+        stop_row = next(
+            line for line in self.text.splitlines() if line.startswith("| Stop |")
+        )
+        self.assertIn("$mod+shift+u", stop_row)
+        self.assertNotIn("$mod+shift+x", stop_row)
+        self.assertNotIn("$mod+Shift+x", stop_row)
+
+    def test_no_stale_often_mod_d_wording(self):
+        self.assertNotIn("often `$mod+d`", self.text)
+        self.assertNotIn("often $mod+d", self.text)
 
 
 class TestHeadings(TestReadmeExists):

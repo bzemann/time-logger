@@ -1,5 +1,5 @@
 #!/bin/sh
-# WorkTime Logger — Linux (Debian, i3, rofi) launcher layer installer.
+# WorkTime Logger — Linux (Debian, i3, rofi, polybar) launcher layer installer.
 #
 # Installs:
 #   - 5 .desktop launcher files in $XDG_DATA_HOME/applications (default
@@ -8,9 +8,11 @@
 #     .desktop-aware launcher / menu).
 #   - a 'worktime' symlink in ~/.local/bin, for terminal use.
 #   - prints the i3 keybinding lines to paste into your own i3 config.
+#   - prints a polybar module snippet, and hints for adding it.
 #
-# It NEVER edits your i3 config (or any other window manager config)
-# automatically — you paste the printed lines in yourself.
+# It NEVER edits your i3 config, polybar config (or any other window
+# manager / status bar config) automatically — you paste the printed
+# lines in yourself.
 #
 # Usage:
 #   install.sh              install (safe to run more than once)
@@ -27,6 +29,7 @@ Install WorkTime Logger's Linux launcher layer:
     $XDG_DATA_HOME/applications (default ~/.local/share/applications)
   - a 'worktime' symlink in ~/.local/bin
   - prints i3 keybinding lines for you to paste in manually
+  - prints a polybar module snippet for you to paste in manually
 
 Options:
   --uninstall   remove the .desktop entries and symlink installed by this script
@@ -68,6 +71,8 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
 REPO=$(cd "$SCRIPT_DIR/../.." && pwd -P)
 WT="$REPO/bin/worktime"
 TEMPLATE="$SCRIPT_DIR/i3-bindings.conf"
+POLYBAR_TEMPLATE="$SCRIPT_DIR/polybar-module.ini"
+ICON="$REPO/platform/linux/icons/worktime.svg"
 
 case "$REPO" in
     *[!A-Za-z0-9._/-]*)
@@ -106,7 +111,7 @@ Name=$name
 Comment=WorkTime Logger: $desc
 Exec=$WT $args
 Terminal=false
-Icon=appointment-soon
+Icon=$ICON
 Categories=Utility;
 Keywords=worktime;time;tracking;
 X-WorkTime-Launcher=true
@@ -196,7 +201,7 @@ do_install() {
     esac
 
     echo ""
-    echo 'i3: paste these lines into your i3 config, then reload i3 ($mod+Shift+c):'
+    echo 'i3: paste these lines into your i3 config, then reload i3 ($mod+shift+c):'
     sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$TEMPLATE" | sed "s|@WORKTIME@|$WT|g"
 
     CONF=""
@@ -208,17 +213,14 @@ do_install() {
     done
 
     if [ -n "$CONF" ]; then
-        for key in t x d w; do
-            pattern1='^[[:space:]]*bindsym[[:space:]]+(\$mod|Mod1|Mod4)\+Shift\+'
-            pattern1="$pattern1$key"'([[:space:]]|$)'
-            pattern2='^[[:space:]]*bindsym[[:space:]]+Shift\+(\$mod|Mod1|Mod4)\+'
-            pattern2="$pattern2$key"'([[:space:]]|$)'
-            full="$pattern1|$pattern2"
-            line=$(grep -E "$full" "$CONF" 2>/dev/null | head -n 1 || true)
+        for key in t u d w; do
+            pattern='^[[:space:]]*bindsym[[:space:]]+(--[a-z-]+[[:space:]]+)*((\$mod|mod1|mod4)\+shift|shift\+(\$mod|mod1|mod4))\+'
+            pattern="$pattern$key"'([[:space:]]|$)'
+            line=$(grep -Ei "$pattern" "$CONF" 2>/dev/null | head -n 1 || true)
             if [ -n "$line" ]; then
-                bind='$mod+Shift+'"$key"
+                bind='$mod+shift+'"$key"
                 case "$line" in
-                    *worktime*)
+                    *[Ww][Oo][Rr][Kk][Tt][Ii][Mm][Ee]*)
                         echo "$bind: already configured"
                         ;;
                     *)
@@ -229,6 +231,95 @@ do_install() {
         done
     fi
 
+    # rofi: find the app-launcher key combo (if any) so the hint below is accurate.
+    rofi_key=""
+    if [ -n "$CONF" ]; then
+        rofi_line=$(grep -Ei '^[[:space:]]*bindsym[[:space:]]' "$CONF" 2>/dev/null \
+            | grep -i 'rofi' \
+            | grep -iE 'drun|app-launcher' \
+            | head -n 1 || true)
+        if [ -n "$rofi_line" ]; then
+            rofi_key=$(printf '%s\n' "$rofi_line" | awk '
+                {
+                    for (i = 1; i <= NF; i++) {
+                        if (tolower($i) == "bindsym") {
+                            j = i + 1
+                            while (j <= NF && $j ~ /^--/) j++
+                            if (j <= NF) {
+                                print $j
+                            }
+                            exit
+                        }
+                    }
+                }')
+        fi
+    fi
+
+    echo ""
+    echo "polybar: add this module to ~/.config/polybar/config.ini:"
+    sed -e '/^;/d' -e '/^[[:space:]]*$/d' "$POLYBAR_TEMPLATE" | sed "s|@WORKTIME@|$WT|g"
+
+    POLY_CONF=""
+    for cfg in "$HOME/.config/polybar/config.ini" "$HOME/.config/polybar/config"; do
+        if [ -f "$cfg" ]; then
+            POLY_CONF="$cfg"
+            break
+        fi
+    done
+
+    if [ -n "$POLY_CONF" ]; then
+        if grep -F -q '[module/worktime]' "$POLY_CONF" 2>/dev/null; then
+            echo "polybar: worktime module already configured"
+        else
+            mr_line=$(grep -E '^[[:space:]]*modules-right[[:space:]]*=' "$POLY_CONF" 2>/dev/null | head -n 1 || true)
+            if [ -n "$mr_line" ]; then
+                already=$(printf '%s\n' "$mr_line" | awk -F'=' '
+                    {
+                        val = $2
+                        n = split(val, arr, /[ \t]+/)
+                        for (i = 1; i <= n; i++) {
+                            if (arr[i] == "worktime") {
+                                print "yes"
+                                exit
+                            }
+                        }
+                    }')
+                if [ "$already" = "yes" ]; then
+                    echo "polybar: 'worktime' is already in modules-right"
+                else
+                    new_line=$(printf '%s\n' "$mr_line" | awk -F'=' '
+                        {
+                            key = $1
+                            val = $2
+                            gsub(/^[ \t]+|[ \t]+$/, "", key)
+                            gsub(/^[ \t]+|[ \t]+$/, "", val)
+                            n = split(val, arr, /[ \t]+/)
+                            inserted = 0
+                            out = ""
+                            for (i = 1; i <= n; i++) {
+                                if (arr[i] == "time" && inserted == 0) {
+                                    out = out "worktime "
+                                    inserted = 1
+                                }
+                                out = out arr[i] " "
+                            }
+                            if (inserted == 0) {
+                                out = out "worktime "
+                            }
+                            gsub(/[ \t]+$/, "", out)
+                            print key " = " out
+                        }')
+                    echo "polybar: and add 'worktime' to modules-right, e.g.:"
+                    echo "$new_line"
+                fi
+            else
+                echo "polybar: add 'worktime' to one of your modules-left/center/right lines."
+            fi
+        fi
+    else
+        echo "(If you use polybar: add 'worktime' to one of your modules-left/center/right lines in ~/.config/polybar/config.ini.)"
+    fi
+
     echo ""
     echo "Done. Installed:"
     echo "  $APPS_DIR/worktime-start.desktop"
@@ -237,8 +328,13 @@ do_install() {
     echo "  $APPS_DIR/worktime-report-week.desktop"
     echo "  $APPS_DIR/worktime-report-month.desktop"
     echo "  $L"
+    echo "  $ICON"
     echo ""
-    echo "Open rofi's app launcher (rofi -show drun, often \$mod+d) and type 'worktime'."
+    if [ -n "$rofi_key" ]; then
+        echo "rofi: open your app launcher ($rofi_key) and type 'worktime'."
+    else
+        echo "rofi: open your app launcher (rofi -show drun) and type 'worktime'."
+    fi
 }
 
 do_uninstall() {
@@ -263,7 +359,8 @@ do_uninstall() {
         fi
     fi
 
-    echo 'Remove the WorkTime bindsym lines ($mod+Shift+t/x/d/w) from your i3 config manually.'
+    echo 'Remove the WorkTime bindsym lines ($mod+shift+t/u/d/w) from your i3 config manually.'
+    echo "Remove the [module/worktime] block, and the 'worktime' token from modules-right (or wherever you added it), from your polybar config manually."
 }
 
 if [ "$mode" = "install" ]; then

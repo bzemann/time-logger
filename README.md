@@ -48,35 +48,80 @@ Aerospace's config (`alt-shift-c`). Uninstall with
 
 ### Debian (Linux)
 
-The repository is private, so first get GitHub access on the Debian
-machine (`gh auth login`, or generate an SSH key and add it under GitHub →
-Settings → SSH and GPG keys), then:
+The repository is private, so the Debian machine needs GitHub access first.
 
-```sh
-git clone git@github.com:bzemann/time-logger.git ~/code/time-logger
-cd ~/code/time-logger
-platform/linux/install.sh
-```
+1. **Prerequisites:**
 
-This creates 5 `.desktop` launchers (picked up by rofi's `drun` mode) and a
-`~/.local/bin/worktime` symlink, and prints the i3 keybinding lines to add
-to `~/.config/i3/config`. Reload i3 with `$mod+Shift+c` afterwards.
-Uninstall with `platform/linux/install.sh --uninstall`. Details, including
-the full Debian setup and a post-install checklist:
-[`platform/linux/README.md`](platform/linux/README.md).
+   ```sh
+   sudo apt install git python3 libnotify-bin dunst xdg-utils
+   ```
+
+2. **GitHub access and clone** (pick one):
+
+   ```sh
+   # a) GitHub CLI (easiest)
+   sudo apt install gh && gh auth login
+   gh repo clone bzemann/time-logger ~/code/time-logger
+
+   # b) SSH key: add the printed key on GitHub → Settings → SSH and GPG keys
+   ssh-keygen -t ed25519 && cat ~/.ssh/id_ed25519.pub
+   git clone git@github.com:bzemann/time-logger.git ~/code/time-logger
+   ```
+
+3. **Run the installer:**
+
+   ```sh
+   cd ~/code/time-logger && platform/linux/install.sh
+   ```
+
+   It creates 5 `.desktop` launchers (with a WorkTime icon) for your rofi app
+   launcher and a `~/.local/bin/worktime` symlink, and prints three things to
+   paste: the i3 keybindings, the polybar module, and your `modules-right`
+   line with `worktime` added. It never edits your configs itself.
+
+4. **i3:** paste the four printed `bindsym $mod+shift+…` lines into
+   `~/.config/i3/config` and reload i3 with `$mod+shift+c`.
+
+5. **polybar:** paste the printed `[module/worktime]` block into
+   `~/.config/polybar/config.ini` and replace your `modules-right = …` line
+   with the printed one. Then restart polybar with
+   `~/.config/polybar/launch.sh` (or restart i3 with `$mod+shift+r`) — a plain
+   i3 reload does not re-run polybar's `exec_always` launcher.
+
+6. **Check:** follow the checklist in
+   [`platform/linux/README.md`](platform/linux/README.md) (keys, rofi entries,
+   dashboard, status bar).
+
+Uninstall with `platform/linux/install.sh --uninstall` (then remove the
+pasted i3 lines and polybar module by hand).
 
 ## Daily use
 
 | Action | macOS (Aerospace) | Debian (i3) | Spotlight / rofi entry |
 |---|---|---|---|
-| Start / show running time | `alt-shift-t` | `$mod+Shift+t` | WorkTime Start |
-| Stop | `alt-shift-x` | `$mod+Shift+x` | WorkTime Stop |
-| Dashboard | `alt-shift-d` | `$mod+Shift+d` | WorkTime Dashboard |
-| Weekly report (this week so far) | `alt-shift-r` | `$mod+Shift+w` | WorkTime Weekly Report |
+| Start / show running time | `alt-shift-t` | `$mod+shift+t` | WorkTime Start |
+| Stop | `alt-shift-x` | `$mod+shift+u` | WorkTime Stop |
+| Dashboard | `alt-shift-d` | `$mod+shift+d` | WorkTime Dashboard |
+| Weekly report (this week so far) | `alt-shift-r` | `$mod+shift+w` | WorkTime Weekly Report |
 | Monthly report | — | — | WorkTime Monthly Report |
 
+On Debian, stop uses `u` instead of `x` because `$mod+shift+x` is commonly
+bound to the lock screen, and the weekly report uses `w` instead of `r`
+because `$mod+shift+r` restarts i3 by default.
+
 There's no keyboard shortcut for the monthly report on either OS; use the
-Spotlight/rofi entry or `worktime report month` from a terminal.
+rofi entry or `worktime report month` from a terminal.
+
+### Status bar (polybar)
+
+The Linux installer prints a ready-to-paste polybar module,
+`[module/worktime]`, that runs `<repo>/bin/worktime status --short` every
+15 seconds and shows the running time (e.g. `1h 24m`); the module is empty
+when nothing is running, so it disappears from the bar. If the CSV or
+config is broken, it shows `err` — run `worktime status` in a terminal to
+see the actual error. Left-clicking the module opens the dashboard. The
+installer also prints your `modules-right` line with `worktime` inserted,
+ready to paste into your polybar config.
 
 Notifications:
 
@@ -117,7 +162,7 @@ install script has symlinked it onto your `PATH`).
 | `worktime config` | Show the effective configuration | `worktime config` |
 | `worktime start [--at HH:MM]` | Start a session, or show the running one | `worktime start` |
 | `worktime stop [--at HH:MM]` | Stop the running session | `worktime stop` |
-| `worktime status` | Print the current state (no notification) | `worktime status` |
+| `worktime status [--short]` | Print the current state (no notification); `--short` prints only the running time (e.g. `1h 24m`) or an empty line, and `err` on a broken CSV/config — for status bars like polybar | `worktime status --short` |
 | `worktime dashboard` | Open the dashboard (starts the server if needed) | `worktime dashboard` |
 | `worktime serve [--port N]` | Run the dashboard server in the foreground | `worktime serve --port 8765` |
 | `worktime stop-server` | Stop the background dashboard server | `worktime stop-server` |
@@ -358,6 +403,8 @@ just copy the CSV file. Other files that live next to it:
   `server.log` (the dashboard server).
 - **"no Python >= 3.11 found":** install Python 3.11+, or point
   `WORKTIME_PYTHON` at one.
+- **polybar shows `err`:** the CSV or config is broken; run `worktime
+  status` in a terminal to see the actual error.
 
 ## Updating
 
@@ -400,10 +447,12 @@ worktime/
 web/                     static dashboard (index.html, style.css, app.js, vendor/chart.umd.js)
 platform/
   macos/                  install.sh, aerospace-bindings.toml, README.md
-  linux/                  install.sh, i3-bindings.conf, README.md
+  linux/                  install.sh, i3-bindings.conf, polybar-module.ini, README.md
+    icons/                  WorkTime icon for the .desktop launchers
 tools/
   make_demo_data.py       reproducible demo CSV generator
 tests/                   unit tests (unittest, stdlib)
+  fixtures/                test fixtures (e.g. for the Linux installer tests)
 docs/                    reference-dashboard.jpeg (design reference)
 ```
 

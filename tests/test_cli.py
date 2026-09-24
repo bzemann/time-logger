@@ -16,7 +16,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -251,6 +251,105 @@ class SessionCommandTests(unittest.TestCase):
             result = run(["start", "--at", "25:00"], env=env)
             self.assertEqual(result.returncode, 1)
             self.assertIn("invalid time", result.stderr)
+
+
+class StatusShortTests(unittest.TestCase):
+    """Tests for `worktime status --short` (machine-readable, for status bars)."""
+
+    def _env(self, tmp_path: Path):
+        cfg_path = tmp_path / "config.toml"
+        data_file = tmp_path / "data" / "worktime.csv"
+        cfg_path.write_text(f'data_file = "{data_file}"\n', encoding="utf-8")
+        env = dict(os.environ)
+        env["WORKTIME_CONFIG"] = str(cfg_path)
+        env["WORKTIME_NO_NOTIFY"] = "1"
+        env["WORKTIME_NO_AUTO_REPORTS"] = "1"
+        return env, data_file
+
+    def test_short_no_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file = self._env(tmp_path)
+
+            result = run(["status", "--short"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "\n")
+
+    def test_short_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file = self._env(tmp_path)
+            data_file.parent.mkdir(parents=True, exist_ok=True)
+
+            now = datetime.now()
+            start = now - timedelta(minutes=90)
+            if start.date() != now.date():
+                # Avoid crossing midnight, which would change the expected
+                # elapsed formatting; fall back to a shorter offset.
+                start = now - timedelta(minutes=30)
+                expected_re = r"^(29|30|31)m\n$"
+            else:
+                expected_re = r"^1h (29|30|31)m\n$"
+            data_file.write_text(
+                "date,start,end,duration_min\n"
+                f"{start.date().isoformat()},{start:%H:%M:%S},,\n",
+                encoding="utf-8",
+            )
+
+            result = run(["status", "--short"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(result.stdout, expected_re)
+
+    def test_short_finished_session_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file = self._env(tmp_path)
+            data_file.parent.mkdir(parents=True, exist_ok=True)
+            data_file.write_text(
+                "date,start,end,duration_min\n"
+                "2026-01-01,08:00:00,09:00:00,60\n",
+                encoding="utf-8",
+            )
+
+            result = run(["status", "--short"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "\n")
+
+    def test_short_broken_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file = self._env(tmp_path)
+            data_file.parent.mkdir(parents=True, exist_ok=True)
+            data_file.write_text("not,the,right,header\nfoo\n", encoding="utf-8")
+
+            result = run(["status", "--short"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "err\n")
+            self.assertTrue(result.stderr.startswith("worktime: "), result.stderr)
+            self.assertIn("line 1", result.stderr)
+
+    def test_short_invalid_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.toml"
+            cfg_path.write_text("bogus_key = 1\n", encoding="utf-8")
+            env = dict(os.environ)
+            env["WORKTIME_CONFIG"] = str(cfg_path)
+            env["WORKTIME_NO_NOTIFY"] = "1"
+            env["WORKTIME_NO_AUTO_REPORTS"] = "1"
+
+            result = run(["status", "--short"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "err\n")
+
+    def test_plain_status_unaffected_by_short_flag_presence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env, data_file = self._env(tmp_path)
+
+            result = run(["status"], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.startswith("Not running."), result.stdout)
 
 
 class AutoCatchUpUnitTests(unittest.TestCase):

@@ -20,7 +20,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
 
 - **Language / deps:** Python 3.11+ standard library only (`csv`, `datetime`, `http.server`, `tomllib`, `fcntl`, `unittest`). Chart.js is vendored in `web/vendor/`, with no CDN, so everything works offline.
 - **`bin/worktime`:** POSIX sh launcher. It follows symlinks, picks the first Python ≥ 3.11 (`$WORKTIME_PYTHON`, `python3` on PATH, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) and runs `python -m worktime`. It exists because shortcut launchers run with a minimal PATH, where macOS `/usr/bin/python3` is 3.9 (no `tomllib`).
-- **`worktime/store.py`:** CSV read/write. Columns: `date,start,end,duration_min` (e.g. `2026-09-23,08:12:05,12:30:40,258`).
+- **`worktime/store.py`:** CSV read/write. Columns: `date,start,end,duration_min` (e.g. `2026-09-23,08:12:05,12:30:40,259`).
   - Local time, `YYYY-MM-DD` / `HH:MM:SS`, UTF-8, `\n` line endings, header row.
   - A **running session** is the row with an empty `end` and `duration_min`. It is the only state, so there is no separate state file.
   - Writes are atomic (temp file + `os.replace`) and guarded by an `fcntl` lock file.
@@ -52,7 +52,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
     - The target of a period covers only days in `[max(start, first entry date), min(end, today)]`. Today counts with its full target; days before tracking started or in the future count 0.
     - Balance = worked − target.
     - Everything is exact-second `timedelta`; rounding happens at display time only.
-    - This reproduces the screenshot: a week with 28h 52m worked at a 8:24 target over 3 days gives +03:40.
+    - This reproduces the screenshot: a week with 28h 52m worked at a 8:24 target over 3 days gives +3:40.
   - API:
     - `Target(daily, workdays, days_off)` with `.for_day(d)` and `.from_config(cfg)`.
     - `tracking_start(entries)`.
@@ -118,12 +118,6 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
       - A session ending after midnight shows "00:20 (+1)".
       - Empty state: "No sessions yet…".
 - **`tools/make_demo_data.py PATH [--days 120] [--seed 1] [--now …] [--no-running] [--force]`:** a reproducible, realistic demo CSV (written via `store.write_entries`). It refuses to overwrite without `--force`. Use it with a temporary config pointed at by `WORKTIME_CONFIG` to try the dashboard or reports without touching real data.
-  - Header with Running status and generated timestamp.
-  - Summary cards (today/week/month/total + daily balance).
-  - Range filter (7d/30d/90d/this year/all/custom).
-  - Daily bar chart with a target line.
-  - Weekly/monthly trend of actual vs. target, with tooltips.
-  - Recent-entries table with a running flag.
 - **`worktime/report.py`:** Weekly and monthly reports as **one self-contained HTML file each**. There is no PDF (Basil's decision); print to PDF from the browser, since an A4 print stylesheet is included.
   - The HTML has no JavaScript and no external resources. SVG charts are drawn by Python, and all text is escaped.
   - Periods: `Period(kind, start, end, title, stem)`. A week is ISO Mon–Sun (`week-2026-W39`, "Week 39, 2026"); a month is a calendar month (`month-2026-09`, "September 2026").
@@ -161,13 +155,19 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - Runs `update-desktop-database` best-effort.
   - Symlinks `~/.local/bin/worktime`.
   - Prints hints for missing `notify-send` / `xdg-open` (`sudo apt install libnotify-bin xdg-utils`, plus dunst).
-  - Prints the i3 lines with a conflict check against `~/.config/i3/config` / `~/.i3/config`. It matches `$mod`/`Mod1`/`Mod4` and both key orders, with a word boundary so `$mod+Shift+tab` isn't `t`. It never edits the i3 config.
+  - Prints the i3 lines (lowercase `shift`, matching Basil's style) with a **case-insensitive** conflict check against `~/.config/i3/config` / `~/.i3/config`.
+    - It matches `$mod`/`mod1`/`mod4`, both key orders, and optional `--flags`, with a word boundary so `$mod+shift+tab` isn't `t`.
+    - It never edits the i3 config.
   - Keys:
-    - `$mod+Shift+t`: start, or show the running time
-    - `$mod+Shift+x`: stop
-    - `$mod+Shift+d`: dashboard
-    - `$mod+Shift+w`: weekly report (**not `r`**: that is i3 restart by default)
+    - `$mod+shift+t`: start, or show the running time
+    - `$mod+shift+u`: stop (**not `x`**: that's Basil's betterlockscreen)
+    - `$mod+shift+d`: dashboard
+    - `$mod+shift+w`: weekly report (**not `r`**: that is i3 restart)
     - The monthly report is only via rofi or the CLI.
+  - rofi: the `.desktop` files use `Icon=<repo>/platform/linux/icons/worktime.svg`. The installer reads the i3 config and names the rofi app launcher key (first `bindsym` whose command contains `rofi` plus `drun` or `app-launcher`; for Basil that's `$mod+space`). It never binds that key.
+  - polybar: `polybar-module.ini` is a template for `[module/worktime]`: `custom/script`, `exec = …/bin/worktime status --short`, `interval = 15`, `click-left` opens the dashboard; the module is hidden when the output is empty.
+    - The installer prints the module and, from `~/.config/polybar/config.ini`, the `modules-right` line with `worktime` inserted before `time`.
+    - After pasting, restart polybar (`~/.config/polybar/launch.sh` or `$mod+shift+r`), because a plain i3 reload doesn't re-run `exec_always`.
   - The repo path must match `[A-Za-z0-9._/-]`, since i3 `exec` and `.desktop` `Exec` are written unquoted.
   - `WORKTIME_INSTALL_ALLOW_ANY_OS=1` is a test-only hook so the tests run on macOS. `WORKTIME_INSTALL_NO_REGISTER=1` skips `update-desktop-database`.
 - **Unexpected errors:**
@@ -180,7 +180,7 @@ It runs on **macOS** (development machine; Aerospace + Spotlight) and **Linux De
   - `tests/test_readme.py` fails if any CLI subcommand or option, `WORKTIME_*` variable (in `worktime/`, `bin/`, `platform/`, `tools/`) or config key is undocumented, if the README mentions a non-existent variable, or if its CSV example rows are inconsistent. **When adding a command, option, env var or config key, update `README.md` too.**
   - `tests/test_e2e.py` runs the whole daily flow through the real `bin/worktime`: status → start → start → dashboard + API → stop → report week → report catch-up → stop-server. It uses a temp config and a free port, and asserts the real CSV is untouched.
   - The reference screenshot lives in `docs/reference-dashboard.jpeg`, the old German tool with project elements. It is not shown in the README.
-- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status` (prints only, no notification). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. `report week|month [--last | --date YYYY-MM-DD] [--no-open]` (default: the current period so far; always overwrites; notifies and opens the browser), `report catch-up`.
+- **CLI** (`worktime/cli.py`, argparse, subcommands via `set_defaults(func=...)`): implemented: `--version`, `config`, `start [--at HH:MM]`, `stop [--at HH:MM]`, `status [--short]` (prints only, no notification; `--short` prints just `1h 24m`, an empty line, or `err`, always exit 0, for polybar). `serve [--port N]` (foreground), `dashboard` (probes the port: if ours, it opens the browser; if free, it starts the server in the background, then opens it; if another program has the port, it errors), `stop-server`. `report week|month [--last | --date YYYY-MM-DD] [--no-open]` (default: the current period so far; always overwrites; notifies and opens the browser), `report catch-up`.
   - Errors: `ConfigError`, `StoreError`, `SessionError` and `ControlError` print `worktime: …` to stderr and exit 1. For `start`, `stop`, `dashboard` and `report` they also send a "WorkTime error" notification, since stderr isn't visible when triggered from a shortcut.
 
 ## Workflow
@@ -195,10 +195,10 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 
 ## Current status
 
-- Implemented: tasks 1–8 (launcher, config incl. `days_off`, CSV store, start/stop/status with `--at`, desktop notifications, stats module, local web server with JSON API, `dashboard`/`serve`/`stop-server`, the complete dashboard, demo data tool, HTML reports with automatic catch-up, the macOS launcher layer, the unexpected-error catch-all). 321 unit tests pass. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
+- Implemented: everything in the roadmap (tasks 1–10) plus the Debian follow-up (2026-09-24). 378 unit tests pass. Basil confirmed on his Mac: notifications, dashboard, reports, all 4 Aerospace shortcuts and all Spotlight launchers.
 - Basil's real CSV was reset to header-only on 2026-09-23 (test sessions removed; backup in the session scratchpad only). Real tracking starts from there.
-- Task 9 (Linux layer) is implemented and tested on macOS in test mode (342 tests pass), but **not yet verified on Basil's Debian machine**. The repo isn't cloned there yet. Next step there: follow `platform/linux/README.md` ("Getting it onto Debian", then the checklist). Fix any Debian findings in a follow-up `/task`.
-- Task 10 done: `README.md`, `tests/test_readme.py` and `tests/test_e2e.py`. 354 unit tests pass.
+- Linux layer: adapted to Basil's real Debian i3, rofi and polybar configs (2026-09-24) and tested on macOS in test mode, but **not yet verified on the Debian machine itself**. The repo isn't cloned there yet. Next step there: the README's Debian installation steps, then the checklist in `platform/linux/README.md`. Fix any findings in a follow-up `/task`.
+- Basil's Debian configs are in `new-conf-linux-debian/` (gitignored, reference only). Local-only copies used as test fixtures: `tests/fixtures/i3-config-debian` and `tests/fixtures/polybar-config.ini`. **They are gitignored and must never be committed** (personal configs, Basil's decision). The tests using them skip when they're absent, and inline sample-config tests cover the same behavior everywhere. `$mod+shift+x` is reserved for betterlockscreen and must never be used by WorkTime. `$mod+space` is his rofi app launcher and must stay untouched.
 - **The roadmap is complete.** Open: the Debian verification of task 9 (Basil runs `platform/linux/README.md` on the Debian machine; fix any findings in a follow-up `/task`).
 - Test-writing note for executors: never put "wait for another executor's file" loops or skips into test files. Waiting belongs only in the executor's own work session.
 - Known limitations: naive local time, so a session spanning a DST change is off by 1h (accepted). Sessions of 24h or more can't be represented. `stop` refuses them (see session.py), so a session forgotten for over a day has to be fixed in the CSV by hand.
@@ -221,7 +221,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 6. ✅ **Dashboard part 2** (done 2026-09-23): weekly/monthly actual-vs-target trend chart with tooltips, recent-entries table with running flag.
 7. ✅ **Reports** (done 2026-09-23): `report week|month [--last|--date] [--no-open]` as self-contained HTML with stats, SVG charts (daily bars, cumulative worked vs. target) and a daily table in `reports/`. Automatic catch-up for the last complete week and month on `start` / `dashboard`. HTML only, no PDF.
 8. ✅ **macOS launcher layer** (done 2026-09-23): Aerospace keybinding snippet, Spotlight `.app` bundles, install script.
-9. ✅ **Linux launcher layer** (implemented 2026-09-23, Debian check pending): i3 keybinding snippet, rofi `.desktop` entries (optional rofi menu), install script.
+9. ✅ **Linux launcher layer** (implemented 2026-09-23, adapted to Basil's Debian configs 2026-09-24; Debian check pending): i3 keybinding snippet, rofi `.desktop` entries with an icon, polybar module, install script.
 10. ✅ **README and end-to-end check** (done 2026-09-23): `README.md` describing installation, configuration and daily usage on **both macOS and Linux Debian** (shortcuts, dashboard, reports, CSV format, troubleshooting), plus an end-to-end check on both OSes.
 
 ## Setup and run
@@ -229,7 +229,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Requirements: Python 3.11+ (macOS: Homebrew `python3`; Debian 12+: system `python3`). Linux notifications: `notify-send` (`libnotify-bin`) + a notification daemon (e.g. dunst).
 - Reports: `bin/worktime report week` (this week so far), `bin/worktime report month --last`, `bin/worktime report week --date 2026-09-23`. They are created automatically after `start` / `dashboard` (disable with `WORKTIME_NO_AUTO_REPORTS=1`).
 - macOS setup: `platform/macos/install.sh`, then paste the printed Aerospace lines and reload (`alt-shift-c`). Remove it with `platform/macos/install.sh --uninstall`.
-- Debian setup: see `platform/linux/README.md` (clone the private repo via `gh auth login` or an SSH key, then `platform/linux/install.sh`, paste the printed i3 lines, reload with `$mod+Shift+c`).
+- Debian setup: see `platform/linux/README.md` (clone the private repo via `gh auth login` or an SSH key, then `platform/linux/install.sh`, paste the printed i3 lines and polybar module, reload i3 with `$mod+shift+c`, restart polybar).
 - Logs (next to the CSV): `error.log` (unexpected errors from shortcuts), `report.log` (background report catch-up), `server.log` (dashboard server).
 - Show effective config: `bin/worktime config` (`bin/worktime --version`)
 - Track time: `bin/worktime start [--at HH:MM]`, `bin/worktime stop [--at HH:MM]`, `bin/worktime status`
@@ -238,7 +238,7 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - Quiet mode for tests: `WORKTIME_NO_NOTIFY=1 WORKTIME_NO_BROWSER=1`
 - Try with demo data: `python3 tools/make_demo_data.py /tmp/wt-demo/wt.csv`, then write `/tmp/wt-demo/c.toml` with `data_file = "/tmp/wt-demo/wt.csv"` and `port = 8799`, then run `WORKTIME_CONFIG=/tmp/wt-demo/c.toml bin/worktime dashboard`
 - JS syntax check (dev only, needs node): `node --check web/app.js`
-- Tests: `python3 -m unittest discover -s tests` (354 tests, about 20 s; macOS-only installer tests are skipped on Linux)
+- Tests: `python3 -m unittest discover -s tests` (378 tests, about 20 s; macOS-only installer tests are skipped on Linux)
 - User manual: `README.md`
 
 ## Changelog
@@ -254,3 +254,4 @@ The Planner (Opus 5.5, `~/.claude/agents/planner.md`) plans, dispatches and revi
 - 2026-09-23: Task 8: macOS launcher layer (`platform/macos/install.sh`: 5 ad-hoc signed Spotlight launchers, a `~/.local/bin` symlink, printed Aerospace bindings alt-shift-t/x/d/r), a catch-all notification plus `error.log` for unexpected errors in shortcut commands, and a `bin/worktime` notification when no Python is found. Installed and verified on Basil's Mac. Real CSV reset. 321 tests.
 - 2026-09-23: Task 9: Linux launcher layer (`platform/linux/install.sh`: 5 rofi `.desktop` entries, a `~/.local/bin` symlink, apt hints, printed i3 bindings $mod+Shift+t/x/d/w with a conflict check; README with Debian setup and checklist). Tested on macOS in test mode; the Debian check is pending. 342 tests.
 - 2026-09-23: Task 10: main `README.md` (both OSes, all commands, config, data, troubleshooting), `tests/test_readme.py` (docs-in-sync guard), `tests/test_e2e.py` (full daily flow). Reference screenshot moved to `docs/`. Roadmap complete; the Debian check is pending. 354 tests.
+- 2026-09-24: Debian follow-up: i3 keys $mod+shift+t/u/d/w (stop moved off `x`, Basil's lock screen), case-insensitive i3 conflict check, rofi launcher-key hint and WorkTime icon, polybar module (`worktime status --short`, printed module plus `modules-right` hint), Basil's i3 and polybar configs as local-only (gitignored) test fixtures, `new-conf-linux-debian/` gitignored, numbered Debian install steps in the README. 378 tests.

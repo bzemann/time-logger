@@ -1,4 +1,18 @@
-"""Tests for platform/linux/install.sh and i3-bindings.conf."""
+"""Tests for platform/linux/install.sh, i3-bindings.conf and polybar-module.ini.
+
+tests/fixtures/i3-config-debian and tests/fixtures/polybar-config.ini are
+local-only, byte-identical copies of Basil's real i3 and polybar configs
+(from new-conf-linux-debian/). Both are personal configuration and are
+gitignored, so they only exist on this machine — on any other checkout
+(e.g. Debian, or a fresh clone from GitHub) they are missing. The tests
+that read them (RealDebianConfigTests, FixtureTests) skip cleanly when
+that's the case. Every behaviour they exercise against the real configs
+(the lock-screen key being left alone, the rofi key-combo hint, the
+modules-right rebuild) is also covered by fixture-independent tests using
+small inline configs, further down in InstallScriptTests, so the
+underlying logic is tested everywhere regardless of the fixtures'
+presence.
+"""
 
 from __future__ import annotations
 
@@ -13,13 +27,20 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LINUX_DIR = REPO_ROOT / "platform" / "linux"
 INSTALL_SH = LINUX_DIR / "install.sh"
 TEMPLATE = LINUX_DIR / "i3-bindings.conf"
+POLYBAR_TEMPLATE = LINUX_DIR / "polybar-module.ini"
+ICON = LINUX_DIR / "icons" / "worktime.svg"
 WT = REPO_ROOT / "bin" / "worktime"
+
+FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
+I3_CONFIG_DEBIAN = FIXTURES_DIR / "i3-config-debian"
+POLYBAR_CONFIG = FIXTURES_DIR / "polybar-config.ini"
 
 # desktop id -> (Name, Exec args)
 APPS = {
@@ -38,6 +59,7 @@ BASE_TOOLS = [
     "dirname",
     "grep",
     "sed",
+    "awk",
     "mkdir",
     "cat",
     "chmod",
@@ -127,6 +149,8 @@ class InstallScriptTests(unittest.TestCase):
             self.assertEqual(section["Exec"], f"{WT} {args}")
             self.assertEqual(section["Terminal"], "false")
             self.assertEqual(section["X-WorkTime-Launcher"], "true")
+            self.assertEqual(section["Icon"], str(ICON))
+            self.assertTrue(Path(section["Icon"]).is_file())
 
             if shutil.which("desktop-file-validate"):
                 validate = subprocess.run(
@@ -163,14 +187,25 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
         expected = [
-            f"bindsym $mod+Shift+t exec --no-startup-id {WT} start",
-            f"bindsym $mod+Shift+x exec --no-startup-id {WT} stop",
-            f"bindsym $mod+Shift+d exec --no-startup-id {WT} dashboard",
-            f"bindsym $mod+Shift+w exec --no-startup-id {WT} report week",
+            f"bindsym $mod+shift+t exec --no-startup-id {WT} start",
+            f"bindsym $mod+shift+u exec --no-startup-id {WT} stop",
+            f"bindsym $mod+shift+d exec --no-startup-id {WT} dashboard",
+            f"bindsym $mod+shift+w exec --no-startup-id {WT} report week",
         ]
         for line in expected:
             self.assertIn(line, result.stdout)
         self.assertIn("rofi", result.stdout)
+        self.assertNotIn("+x exec", result.stdout)
+
+    def test_polybar_lines_and_generic_hint_without_config(self):
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        self.assertIn("[module/worktime]", result.stdout)
+        self.assertIn(f"exec = {WT} status --short", result.stdout)
+        self.assertIn(f"click-left = {WT} dashboard", result.stdout)
+        self.assertIn("interval = 15", result.stdout)
+        self.assertIn("If you use polybar", result.stdout)
 
     def test_dependency_hint_shown_when_missing(self):
         with tempfile.TemporaryDirectory() as tool_tmp:
@@ -245,32 +280,166 @@ class InstallScriptTests(unittest.TestCase):
         i3_dir = self.home / ".config" / "i3"
         i3_dir.mkdir(parents=True)
         (i3_dir / "config").write_text(
-            "bindsym $mod+Shift+d exec dmenu_run\n"
-            "bindsym Mod4+Shift+x exec --no-startup-id /x/bin/worktime stop\n"
-            "bindsym $mod+Shift+tab focus left\n",
+            "bindsym $mod+shift+d exec dmenu_run\n"
+            "bindsym Mod4+Shift+u exec --no-startup-id /x/bin/worktime stop\n"
+            "bindsym $mod+shift+tab focus left\n",
             encoding="utf-8",
         )
 
         result = run_install([], self.home)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = result.stdout + result.stderr
-        self.assertIn("Warning: $mod+Shift+d is already bound", output)
-        self.assertIn("$mod+Shift+x: already configured", output)
-        self.assertNotIn("$mod+Shift+t is already bound", output)
-        self.assertNotIn("$mod+Shift+t: already configured", output)
+        self.assertIn("Warning: $mod+shift+d is already bound", output)
+        self.assertIn("$mod+shift+u: already configured", output)
+        self.assertNotIn("$mod+shift+t is already bound", output)
+        self.assertNotIn("$mod+shift+t: already configured", output)
 
     def test_i3_config_fallback_used(self):
         i3_dir = self.home / ".i3"
         i3_dir.mkdir(parents=True)
         (i3_dir / "config").write_text(
-            "bindsym $mod+Shift+w exec --no-startup-id /x/bin/worktime report week\n",
+            "bindsym $mod+shift+w exec --no-startup-id /x/bin/worktime report week\n",
             encoding="utf-8",
         )
 
         result = run_install([], self.home)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = result.stdout + result.stderr
-        self.assertIn("$mod+Shift+w: already configured", output)
+        self.assertIn("$mod+shift+w: already configured", output)
+
+    def test_conflict_check_is_case_insensitive(self):
+        i3_dir = self.home / ".config" / "i3"
+        i3_dir.mkdir(parents=True)
+        (i3_dir / "config").write_text(
+            "bindsym $mod+shift+t exec foo\n"
+            "bindsym Mod4+SHIFT+u exec foo\n"
+            "bindsym --release $mod+Shift+w exec foo\n"
+            "# bindsym $mod+shift+d exec foo\n"
+            "bindsym $mod+shift+tab focus left\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn("Warning: $mod+shift+t is already bound", output)
+        self.assertIn("Warning: $mod+shift+u is already bound", output)
+        self.assertIn("Warning: $mod+shift+w is already bound", output)
+        self.assertNotIn("$mod+shift+d is already bound", output)
+        self.assertNotIn("$mod+shift+d: already configured", output)
+
+    def test_conflict_check_tab_alone_is_not_t(self):
+        i3_dir = self.home / ".config" / "i3"
+        i3_dir.mkdir(parents=True)
+        (i3_dir / "config").write_text(
+            "bindsym $mod+shift+tab focus left\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertNotIn("$mod+shift+t is already bound", output)
+        self.assertNotIn("$mod+shift+t: already configured", output)
+
+    def test_rofi_hint_fallback_without_rofi_line(self):
+        i3_dir = self.home / ".config" / "i3"
+        i3_dir.mkdir(parents=True)
+        (i3_dir / "config").write_text(
+            "bindsym $mod+d exec dmenu_run\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "rofi: open your app launcher (rofi -show drun) and type 'worktime'.",
+            result.stdout,
+        )
+
+    def test_polybar_module_already_configured(self):
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[module/worktime]\ntype = custom/script\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("polybar: worktime module already configured", result.stdout)
+
+    def test_polybar_modules_right_already_has_worktime(self):
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[bar/main]\nmodules-right = a worktime b\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("polybar: 'worktime' is already in modules-right", result.stdout)
+
+    def test_polybar_modules_right_without_time_appends_at_end(self):
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[bar/main]\nmodules-right = a b c\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("modules-right = a b c worktime", result.stdout)
+
+    def test_polybar_modules_right_rebuild_realistic_inline(self):
+        # Fixture-independent version of RealDebianConfigTests.test_real_configs_install_cleanly's
+        # modules-right assertion, using an inline config with the same tokens.
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        (polybar_dir / "config.ini").write_text(
+            "[bar/main]\nmodules-right = shot wifi memory disk volume time powerbtn\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "modules-right = shot wifi memory disk volume worktime time powerbtn",
+            result.stdout,
+        )
+
+    def test_lock_screen_binding_never_suggested_inline(self):
+        # Fixture-independent version of RealDebianConfigTests.test_real_i3_config_never_suggests_binding_x.
+        i3_dir = self.home / ".config" / "i3"
+        i3_dir.mkdir(parents=True)
+        (i3_dir / "config").write_text(
+            "bindsym $mod+shift+x exec betterlockscreen -l dimblur\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertNotIn("+x ", output)
+
+    def test_rofi_hint_with_app_launcher_key_inline(self):
+        # Fixture-independent version of RealDebianConfigTests.test_real_configs_install_cleanly's
+        # rofi-hint assertion, using an inline config with the same app-launcher binding.
+        i3_dir = self.home / ".config" / "i3"
+        i3_dir.mkdir(parents=True)
+        (i3_dir / "config").write_text(
+            "bindsym $mod+space exec --no-startup-id ~/.config/rofi/app-launcher/launch.sh\n",
+            encoding="utf-8",
+        )
+
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "rofi: open your app launcher ($mod+space) and type 'worktime'.",
+            result.stdout,
+        )
 
     def test_uninstall_removes_files_and_symlink(self):
         result = run_install([], self.home)
@@ -288,6 +457,14 @@ class InstallScriptTests(unittest.TestCase):
 
         result_uninstall2 = run_install(["--uninstall"], self.home)
         self.assertEqual(result_uninstall2.returncode, 0, result_uninstall2.stderr)
+
+    def test_uninstall_message_mentions_polybar_and_i3(self):
+        result_uninstall = run_install(["--uninstall"], self.home)
+        self.assertEqual(result_uninstall.returncode, 0, result_uninstall.stderr)
+        output = result_uninstall.stdout + result_uninstall.stderr
+        self.assertIn("$mod+shift+t/u/d/w", output)
+        self.assertIn("module/worktime", output)
+        self.assertIn("polybar", output)
 
     def test_unknown_option_exits_2(self):
         result = run_install(["--bogus"], self.home)
@@ -355,6 +532,53 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("Stopped:", stop_result.stdout)
 
 
+@unittest.skipUnless(
+    I3_CONFIG_DEBIAN.exists() and POLYBAR_CONFIG.exists(),
+    "local-only fixture (personal config, gitignored)",
+)
+class RealDebianConfigTests(unittest.TestCase):
+    """Installer behaviour against Basil's real i3 + polybar configs
+    (tests/fixtures/i3-config-debian, tests/fixtures/polybar-config.ini —
+    exact copies of new-conf-linux-debian/, which is gitignored). Skipped
+    on checkouts where the fixtures aren't present (see module docstring);
+    the same behaviour is also covered by inline tests in
+    InstallScriptTests that don't depend on the fixtures."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        i3_dir = self.home / ".config" / "i3"
+        i3_dir.mkdir(parents=True)
+        shutil.copyfile(I3_CONFIG_DEBIAN, i3_dir / "config")
+        polybar_dir = self.home / ".config" / "polybar"
+        polybar_dir.mkdir(parents=True)
+        shutil.copyfile(POLYBAR_CONFIG, polybar_dir / "config.ini")
+
+    def test_real_configs_install_cleanly(self):
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+
+        self.assertNotIn("Warning:", output)
+        self.assertIn(
+            "rofi: open your app launcher ($mod+space) and type 'worktime'.",
+            result.stdout,
+        )
+        self.assertIn(
+            "modules-right = shot wifi memory disk volume worktime time powerbtn",
+            result.stdout,
+        )
+        self.assertIn(f"exec = {WT} status --short", result.stdout)
+        self.assertIn(f"click-left = {WT} dashboard", result.stdout)
+
+    def test_real_i3_config_never_suggests_binding_x(self):
+        result = run_install([], self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertNotIn("+x ", output)
+
+
 class InstallScriptSyntaxTests(unittest.TestCase):
     def test_sh_n(self):
         result = subprocess.run(["sh", "-n", str(INSTALL_SH)], capture_output=True, text=True)
@@ -375,10 +599,53 @@ class I3TemplateTests(unittest.TestCase):
         self.assertEqual(len(lines), 4)
 
         pattern = re.compile(
-            r"^bindsym \$mod\+Shift\+[txdw] exec --no-startup-id @WORKTIME@ (start|stop|dashboard|report week)$"
+            r"^bindsym \$mod\+shift\+[tudw] exec --no-startup-id @WORKTIME@ (start|stop|dashboard|report week)$"
         )
         for line in lines:
             self.assertRegex(line, pattern)
+
+        # No bindsym line for x: it's commonly the lock screen key on Basil's
+        # setup (a comment mentions this, which is fine).
+        for line in text.splitlines():
+            if line.strip().startswith("bindsym"):
+                self.assertNotIn("shift+x", line.lower())
+
+
+class PolybarTemplateTests(unittest.TestCase):
+    def test_template_lines(self):
+        text = POLYBAR_TEMPLATE.read_text(encoding="utf-8")
+        lines = [line for line in text.splitlines() if line.strip() and not line.strip().startswith(";")]
+        self.assertGreaterEqual(len(lines), 1)
+        self.assertEqual(lines[0], "[module/worktime]")
+
+    def test_template_parses_as_ini(self):
+        cp = configparser.RawConfigParser(comment_prefixes=(";", "#"), interpolation=None)
+        cp.read(POLYBAR_TEMPLATE, encoding="utf-8")
+        self.assertIn("module/worktime", cp.sections())
+        section = cp["module/worktime"]
+        self.assertEqual(section["type"], "custom/script")
+        self.assertTrue(section["exec"].endswith("status --short"))
+        self.assertEqual(section["interval"], "15")
+        self.assertTrue(section["click-left"].endswith("dashboard"))
+
+
+class IconTests(unittest.TestCase):
+    def test_icon_is_valid_svg(self):
+        self.assertTrue(ICON.is_file())
+        self.assertLess(ICON.stat().st_size, 1024)
+        tree = ET.parse(ICON)
+        root = tree.getroot()
+        self.assertTrue(root.tag.endswith("svg"))
+
+
+@unittest.skipUnless(
+    I3_CONFIG_DEBIAN.exists() and POLYBAR_CONFIG.exists(),
+    "local-only fixture (personal config, gitignored)",
+)
+class FixtureTests(unittest.TestCase):
+    def test_fixtures_exist(self):
+        self.assertTrue(I3_CONFIG_DEBIAN.is_file())
+        self.assertTrue(POLYBAR_CONFIG.is_file())
 
 
 if __name__ == "__main__":
